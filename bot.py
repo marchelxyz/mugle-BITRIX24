@@ -692,8 +692,8 @@ def main():
                 
                 # Обработчик для health check
                 async def health_check(request):
-                    logger.debug(f"Health check запрос: {request.path}")
-                    return web.Response(text='OK')
+                    logger.info(f"Health check запрос: {request.path} от {request.remote}")
+                    return web.Response(text='OK', status=200)
                 
                 # Обработчик для webhook от Telegram
                 async def webhook_handler(request):
@@ -726,40 +726,78 @@ def main():
                 
                 # Используем явное управление event loop для лучшего контроля
                 async def run():
-                    # Создаем runner и запускаем сервер
-                    runner = web.AppRunner(aio_app)
-                    await runner.setup()
-                    site = web.TCPSite(runner, '0.0.0.0', port)
-                    await site.start()
-                    logger.info(f"Сервер успешно запущен на 0.0.0.0:{port}")
-                    
-                    # Ждем бесконечно (сервер будет работать до получения сигнала остановки)
+                    runner = None
                     try:
+                        # Создаем runner и запускаем сервер
+                        runner = web.AppRunner(aio_app)
+                        await runner.setup()
+                        site = web.TCPSite(runner, '0.0.0.0', port)
+                        await site.start()
+                        logger.info(f"Сервер успешно запущен на 0.0.0.0:{port}")
+                        
+                        # Ждем бесконечно - сервер будет работать до получения сигнала остановки
+                        # Используем простой бесконечный цикл с периодическими проверками
                         import signal
-                        stop = asyncio.Event()
+                        shutdown_event = asyncio.Event()
                         
-                        def signal_handler():
-                            logger.info("Получен сигнал остановки")
-                            stop.set()
-                        
-                        # Регистрируем обработчики сигналов
+                        # Регистрируем обработчики сигналов через loop.add_signal_handler
                         loop = asyncio.get_running_loop()
-                        for sig in (signal.SIGTERM, signal.SIGINT):
-                            loop.add_signal_handler(sig, signal_handler)
                         
-                        # Ждем сигнала остановки
-                        await stop.wait()
+                        def handle_signal():
+                            logger.info("Получен сигнал остановки")
+                            shutdown_event.set()
+                        
+                        try:
+                            # Используем add_signal_handler для правильной работы в async контексте
+                            if hasattr(signal, 'SIGTERM'):
+                                loop.add_signal_handler(signal.SIGTERM, handle_signal)
+                            if hasattr(signal, 'SIGINT'):
+                                loop.add_signal_handler(signal.SIGINT, handle_signal)
+                        except (ValueError, OSError, RuntimeError) as sig_error:
+                            logger.warning(f"Не удалось зарегистрировать обработчики сигналов через loop: {sig_error}")
+                            logger.info("Используем альтернативный метод обработки сигналов")
+                            # Fallback: используем стандартный signal.signal
+                            try:
+                                signal.signal(signal.SIGTERM, lambda s, f: shutdown_event.set())
+                                signal.signal(signal.SIGINT, lambda s, f: shutdown_event.set())
+                            except Exception as fallback_error:
+                                logger.warning(f"Не удалось зарегистрировать обработчики сигналов: {fallback_error}")
+                        
+                        # Ждем сигнала остановки или работаем бесконечно
+                        logger.info("Сервер работает. Ожидание сигнала остановки...")
+                        logger.info("Сервер готов принимать запросы на порту %d", port)
+                        try:
+                            # Используем бесконечное ожидание с периодическими логами для диагностики
+                            check_count = 0
+                            while not shutdown_event.is_set():
+                                await asyncio.sleep(60)  # Проверяем каждую минуту
+                                check_count += 1
+                                if check_count % 5 == 0:  # Каждые 5 минут
+                                    logger.info(f"Сервер работает нормально (проверка #{check_count})")
+                        except Exception as wait_error:
+                            logger.error(f"Ошибка при ожидании сигнала: {wait_error}", exc_info=True)
+                            # Fallback: бесконечное ожидание с периодическими проверками
+                            logger.info("Переход на бесконечное ожидание...")
+                            while not shutdown_event.is_set():
+                                await asyncio.sleep(60)  # Проверяем каждую минуту
+                    except (KeyboardInterrupt, SystemExit):
+                        logger.info("Получен сигнал остановки (KeyboardInterrupt/SystemExit)")
                     except Exception as e:
-                        logger.error(f"Ошибка при работе сервера: {e}", exc_info=True)
+                        logger.error(f"Критическая ошибка при работе сервера: {e}", exc_info=True)
+                        raise
                     finally:
-                        logger.info("Остановка сервера...")
-                        await runner.cleanup()
+                        if runner:
+                            logger.info("Остановка сервера...")
+                            try:
+                                await runner.cleanup()
+                            except Exception as cleanup_error:
+                                logger.error(f"Ошибка при очистке runner: {cleanup_error}")
                 
                 # Запускаем event loop
                 try:
                     asyncio.run(run())
                 except KeyboardInterrupt:
-                    logger.info("Получен KeyboardInterrupt")
+                    logger.info("Получен KeyboardInterrupt на верхнем уровне")
                 except Exception as run_error:
                     logger.error(f"Ошибка при запуске сервера: {run_error}", exc_info=True)
                     raise
