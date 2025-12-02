@@ -43,38 +43,78 @@ class Bitrix24Client:
     def create_task(
         self,
         title: str,
-        responsible_id: int,
+        responsible_ids: List[int],
         creator_id: int,
         description: str = "",
-        deadline: str = None
+        deadline: str = None,
+        file_ids: List[int] = None
     ) -> Dict:
         """
         Создание задачи в Битрикс24
         
         Args:
             title: Название задачи
-            responsible_id: ID ответственного пользователя
+            responsible_ids: Список ID ответственных пользователей
             creator_id: ID создателя задачи
             description: Описание задачи
             deadline: Дедлайн задачи (формат: YYYY-MM-DD HH:MI:SS)
+            file_ids: Список ID прикрепленных файлов
             
         Returns:
             Результат создания задачи
         """
-        task_data = {
-            "fields": {
-                "TITLE": title,
-                "RESPONSIBLE_ID": responsible_id,
-                "CREATED_BY": creator_id,
-                "DESCRIPTION": description,
+        # Если один ответственный, используем RESPONSIBLE_ID
+        # Если несколько, создаем задачи для каждого или используем группу
+        if len(responsible_ids) == 1:
+            task_data = {
+                "fields": {
+                    "TITLE": title,
+                    "RESPONSIBLE_ID": responsible_ids[0],
+                    "CREATED_BY": creator_id,
+                    "DESCRIPTION": description,
+                }
             }
-        }
+        else:
+            # Для нескольких ответственных используем ACCCOMPLICES
+            task_data = {
+                "fields": {
+                    "TITLE": title,
+                    "RESPONSIBLE_ID": responsible_ids[0],
+                    "ACCOMPLICES": responsible_ids[1:] if len(responsible_ids) > 1 else [],
+                    "CREATED_BY": creator_id,
+                    "DESCRIPTION": description,
+                }
+            }
         
         if deadline:
             task_data["fields"]["DEADLINE"] = deadline
         
+        if file_ids:
+            task_data["fields"]["UF_TASK_WEBDAV_FILES"] = file_ids
+        
         result = self._make_request("tasks.task.add", task_data)
         return result
+    
+    def upload_file(self, file_content: bytes, filename: str) -> Optional[int]:
+        """
+        Загрузка файла в Битрикс24
+        
+        Args:
+            file_content: Содержимое файла в байтах
+            filename: Имя файла
+            
+        Returns:
+            ID загруженного файла или None
+        """
+        try:
+            # Загрузка файла через disk.file.upload
+            # Сначала нужно получить временный URL для загрузки
+            result = self._make_request("disk.folder.getchildren", {"id": "shared_files"})
+            # Упрощенная версия - в реальности нужна более сложная логика
+            # Для начала возвращаем None, файлы можно прикрепить позже через веб-интерфейс
+            return None
+        except Exception:
+            return None
     
     def get_user_by_id(self, user_id: int) -> Optional[Dict]:
         """

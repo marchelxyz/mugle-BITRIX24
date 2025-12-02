@@ -4,10 +4,19 @@ Telegram бот для создания задач в Битрикс24 чере�
 import os
 import re
 import logging
-from typing import Dict, Optional
+from datetime import datetime
+from typing import Dict, Optional, List
 from dotenv import load_dotenv
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    ConversationHandler,
+    filters,
+    ContextTypes
+)
+from telegram.constants import ParseMode
 from bitrix24_client import Bitrix24Client
 
 # Загрузка переменных окружения
@@ -26,19 +35,140 @@ bitrix_client = Bitrix24Client(
     webhook_token=os.getenv("BITRIX24_WEBHOOK_TOKEN")
 )
 
-# Хранилище соответствий Telegram username -> Bitrix24 User ID
+# Состояния диалога
+WAITING_FOR_RESPONSIBLES, WAITING_FOR_DEADLINE, WAITING_FOR_DESCRIPTION, WAITING_FOR_FILES = range(4)
+
+# Хранилище соответствий Telegram User ID -> Bitrix24 User ID
 # В продакшене это должно быть в базе данных
-USER_MAPPING: Dict[str, int] = {}
+TELEGRAM_TO_BITRIX_MAPPING: Dict[int, int] = {}
+
+# Хранилище соответствий Telegram username -> Bitrix24 User ID (для поиска по имени)
+USERNAME_TO_BITRIX_MAPPING: Dict[str, int] = {}
+
+
+def parse_initial_message(text: str, bot_username: str) -> Optional[str]:
+    """
+    Парсинг начального сообщения вида "@bot, текст задачи"
+    
+    Args:
+        text: Текст сообщения
+        bot_username: Username бота (без @)
+        
+    Returns:
+        Текст задачи или None
+    """
+    # Паттерн для поиска упоминания бота и текста задачи
+    # Формат: @bot, текст задачи или @bot текст задачи
+    patterns = [
+        rf'@{bot_username}[,\s]+(.+)',
+        rf'@{bot_username}\s+(.+)',
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            task_text = match.group(1).strip()
+            if task_text:
+                return task_text
+    
+    return None
+
+
+def parse_responsibles(responsibles_text: str) -> List[str]:
+    """
+    Парсинг списка ответственных через запятую
+    
+    Args:
+        responsibles_text: Текст с именами через запятую
+        
+    Returns:
+        Список имен
+    """
+    # Разделяем по запятой и очищаем от пробелов
+    names = [name.strip() for name in responsibles_text.split(',')]
+    return [name for name in names if name]
+
+
+def parse_deadline(deadline_text: str) -> Optional[str]:
+    """
+    Парсинг даты в формате дд.мм.гг чч:мм
+    
+    Args:
+        deadline_text: Текст с датой
+        
+    Returns:
+        Дата в формате YYYY-MM-DD HH:MI:SS или None
+    """
+    try:
+        # Паттерн для дд.мм.гг чч:мм
+        pattern = r'(\d{2})\.(\d{2})\.(\d{2,4})\s+(\d{2}):(\d{2})'
+        match = re.match(pattern, deadline_text.strip())
+        
+        if not match:
+            return None
+        
+        day, month, year, hour, minute = match.groups()
+        
+        # Обработка года (если 2 цифры, добавляем 20)
+        if len(year) == 2:
+            year = f"20{year}"
+        
+        # Формируем дату
+        date_str = f"{year}-{month}-{day} {hour}:{minute}:00"
+        
+        # Проверяем валидность даты
+        datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S")
+        
+        return date_str
+    except Exception as e:
+        logger.error(f"Ошибка парсинга даты: {e}")
+        return None
+
+
+def find_bitrix_user_by_name(name: str) -> Optional[int]:
+    """
+    Поиск пользователя Битрикс24 по имени и фамилии
+    
+    Args:
+        name: Имя и фамилия (например, "Иван Иванов")
+        
+    Returns:
+        ID пользователя Битрикс24 или None
+    """
+    # Сначала проверяем маппинг по полному имени (если был добавлен через link_username)
+    # Но обычно это будет поиск через API
+    
+    # Ищем через API Битрикс24
+    users = bitrix_client.search_users(name)
+    
+    if users:
+        # Ищем точное совпадение по имени и фамилии
+        name_parts = name.lower().split()
+        for user in users:
+            user_name = user.get('NAME', '').lower()
+            user_last_name = user.get('LAST_NAME', '').lower()
+            full_name = f"{user_name} {user_last_name}".strip()
+            
+            # Проверяем точное совпадение или совпадение по частям
+            if (full_name == name.lower() or 
+                (len(name_parts) >= 2 and 
+                 user_name == name_parts[0] and user_last_name == name_parts[1])):
+                return int(user.get("ID"))
+        
+        # Если точного совпадения нет, возвращаем первого найденного
+        return int(users[0].get("ID"))
+    
+    return None
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /start"""
     await update.message.reply_text(
         "Привет! Я бот для создания задач в Битрикс24.\n\n"
-        "Используй меня так:\n"
-        "@бот @username текст задачи\n\n"
+        "Чтобы создать задачу, упомяни меня в сообщении:\n"
+        "@бот, текст задачи\n\n"
         "Пример:\n"
-        "@бот @ivanov создать отчет по продажам"
+        "@bitmugle, Зум по встрече с партнерами"
     )
 
 
@@ -46,27 +176,64 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /help"""
     await update.message.reply_text(
         "📋 Как использовать бота:\n\n"
-        "1. Упомяни меня и коллегу через @\n"
-        "2. Напиши текст задачи\n\n"
+        "1. Упомяни меня в сообщении с текстом задачи\n"
+        "2. Ответь на вопросы бота для уточнения деталей\n\n"
         "Пример:\n"
-        "@бот @ivanov подготовить презентацию к завтрашней встрече\n\n"
+        "@bitmugle, Зум по встрече с партнерами\n\n"
         "Команды:\n"
         "/start - Начать работу\n"
         "/help - Показать справку\n"
-        "/link @username bitrix_id - Связать Telegram username с ID пользователя Битрикс24"
+        "/link bitrix_id - Связать ваш Telegram аккаунт с ID пользователя Битрикс24\n"
+        "/link_username @username bitrix_id - Связать Telegram username с пользователем Битрикс24\n"
+        "/cancel - Отменить создание задачи"
     )
 
 
 async def link_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для связывания Telegram User ID с ID пользователя Битрикс24"""
+    if not context.args or len(context.args) < 1:
+        await update.message.reply_text(
+            "Использование: /link bitrix_user_id\n\n"
+            "Пример: /link 123\n\n"
+            "Эта команда свяжет ваш Telegram аккаунт с пользователем Битрикс24."
+        )
+        return
+    
+    telegram_user_id = update.effective_user.id
+    
+    try:
+        bitrix_user_id = int(context.args[0])
+        
+        # Проверяем, существует ли пользователь в Битрикс24
+        user_info = bitrix_client.get_user_by_id(bitrix_user_id)
+        if not user_info:
+            await update.message.reply_text(
+                f"❌ Пользователь с ID {bitrix_user_id} не найден в Битрикс24"
+            )
+            return
+        
+        TELEGRAM_TO_BITRIX_MAPPING[telegram_user_id] = bitrix_user_id
+        await update.message.reply_text(
+            f"✅ Связь установлена:\n"
+            f"Ваш Telegram аккаунт → {user_info.get('NAME', '')} {user_info.get('LAST_NAME', '')} "
+            f"(ID: {bitrix_user_id})"
+        )
+    except ValueError:
+        await update.message.reply_text("❌ ID пользователя должен быть числом")
+
+
+async def link_username(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда для связывания Telegram username с ID пользователя Битрикс24"""
     if not context.args or len(context.args) < 2:
         await update.message.reply_text(
-            "Использование: /link @username bitrix_user_id\n\n"
-            "Пример: /link @ivanov 123"
+            "Использование: /link_username @username bitrix_user_id\n\n"
+            "Пример: /link_username @ivanov 123\n\n"
+            "Эта команда свяжет Telegram username с пользователем Битрикс24 для поиска по имени."
         )
         return
     
     telegram_username = context.args[0].lstrip('@')
+    
     try:
         bitrix_user_id = int(context.args[1])
         
@@ -78,7 +245,7 @@ async def link_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
-        USER_MAPPING[telegram_username] = bitrix_user_id
+        USERNAME_TO_BITRIX_MAPPING[telegram_username] = bitrix_user_id
         await update.message.reply_text(
             f"✅ Связь установлена:\n"
             f"@{telegram_username} → {user_info.get('NAME', '')} {user_info.get('LAST_NAME', '')} "
@@ -88,104 +255,283 @@ async def link_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ ID пользователя должен быть числом")
 
 
-def parse_task_message(text: str, bot_username: str) -> Optional[Dict]:
-    """
-    Парсинг сообщения для извлечения задачи
-    
-    Args:
-        text: Текст сообщения
-        bot_username: Username бота (без @)
-        
-    Returns:
-        Словарь с информацией о задаче или None
-    """
-    # Паттерн для поиска @ упоминаний
-    # Формат: @бот @username текст задачи
-    pattern = rf'@{bot_username}\s+@(\w+)\s+(.+)'
-    match = re.search(pattern, text, re.IGNORECASE)
-    
-    if not match:
-        return None
-    
-    telegram_username = match.group(1)
-    task_text = match.group(2).strip()
-    
-    if not task_text:
-        return None
-    
-    return {
-        "telegram_username": telegram_username,
-        "task_text": task_text
-    }
-
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик текстовых сообщений"""
+async def start_task_creation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Начало создания задачи - парсинг начального сообщения"""
     if not update.message or not update.message.text:
-        return
+        return ConversationHandler.END
     
     text = update.message.text
     bot_username = context.bot.username
     
-    # Парсим сообщение
-    task_info = parse_task_message(text, bot_username)
+    # Парсим начальное сообщение
+    task_title = parse_initial_message(text, bot_username)
     
-    if not task_info:
-        # Если сообщение не содержит команду создания задачи, игнорируем
-        return
+    if not task_title:
+        return ConversationHandler.END
     
-    telegram_username = task_info["telegram_username"]
-    task_text = task_info["task_text"]
+    # Сохраняем данные задачи в контексте
+    context.user_data['task_title'] = task_title
+    context.user_data['task_files'] = []
     
-    # Получаем ID пользователя Битрикс24
-    bitrix_user_id = USER_MAPPING.get(telegram_username)
+    # Получаем ID создателя задачи
+    telegram_user_id = update.effective_user.id
+    creator_id = TELEGRAM_TO_BITRIX_MAPPING.get(telegram_user_id)
     
-    if not bitrix_user_id:
+    if not creator_id:
         await update.message.reply_text(
-            f"❌ Пользователь @{telegram_username} не связан с Битрикс24.\n\n"
-            f"Используйте команду:\n"
-            f"/link @{telegram_username} bitrix_user_id"
+            "❌ Ваш Telegram аккаунт не связан с Битрикс24.\n\n"
+            "Используйте команду:\n"
+            "/link bitrix_user_id\n\n"
+            "Чтобы узнать свой ID в Битрикс24, зайдите в профиль и посмотрите в URL."
         )
-        return
+        return ConversationHandler.END
     
-    # Получаем информацию о пользователе Битрикс24
-    user_info = bitrix_client.get_user_by_id(bitrix_user_id)
-    if not user_info:
+    context.user_data['creator_id'] = creator_id
+    
+    # Задаем первый вопрос
+    await update.message.reply_text(
+        f"📋 Задача: {task_title}\n\n"
+        "1️⃣ На кого задача? (Имя и Фамилия)\n"
+        "Можно указать несколько человек через запятую.\n\n"
+        "Пример: Иван Иванов, Петр Петров"
+    )
+    
+    return WAITING_FOR_RESPONSIBLES
+
+
+async def handle_responsibles(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка ответа на вопрос об ответственных"""
+    if not update.message or not update.message.text:
+        return WAITING_FOR_RESPONSIBLES
+    
+    responsibles_text = update.message.text.strip()
+    responsible_names = parse_responsibles(responsibles_text)
+    
+    if not responsible_names:
         await update.message.reply_text(
-            f"❌ Пользователь с ID {bitrix_user_id} не найден в Битрикс24"
+            "❌ Пожалуйста, укажите хотя бы одного ответственного.\n"
+            "Формат: Имя Фамилия (можно несколько через запятую)"
         )
-        return
+        return WAITING_FOR_RESPONSIBLES
     
-    # Получаем ID создателя задачи (можно использовать ID пользователя Telegram)
-    # Пока используем значение из переменной окружения или ID ответственного
-    creator_id = int(os.getenv("BITRIX24_USER_ID", bitrix_user_id))
+    # Ищем пользователей в Битрикс24
+    responsible_ids = []
+    not_found = []
     
+    for name in responsible_names:
+        bitrix_id = find_bitrix_user_by_name(name)
+        if bitrix_id:
+            responsible_ids.append(bitrix_id)
+        else:
+            not_found.append(name)
+    
+    if not responsible_ids:
+        await update.message.reply_text(
+            f"❌ Не удалось найти ни одного пользователя в Битрикс24.\n\n"
+            f"Проверьте правильность написания имен или используйте команду:\n"
+            f"/link_username @username bitrix_id\n"
+            f"для связывания Telegram username с пользователем Битрикс24."
+        )
+        return WAITING_FOR_RESPONSIBLES
+    
+    if not_found:
+        await update.message.reply_text(
+            f"⚠️ Не найдены пользователи: {', '.join(not_found)}\n"
+            f"Продолжаем с найденными пользователями..."
+        )
+    
+    context.user_data['responsible_ids'] = responsible_ids
+    
+    # Задаем следующий вопрос
+    await update.message.reply_text(
+        "2️⃣ Какой срок? (формат: дд.мм.гг чч:мм)\n\n"
+        "Пример: 25.12.24 15:30"
+    )
+    
+    return WAITING_FOR_DEADLINE
+
+
+async def handle_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка ответа на вопрос о сроке"""
+    if not update.message or not update.message.text:
+        return WAITING_FOR_DEADLINE
+    
+    deadline_text = update.message.text.strip()
+    
+    # Парсим дату
+    deadline = parse_deadline(deadline_text)
+    
+    if not deadline:
+        await update.message.reply_text(
+            "❌ Неверный формат даты.\n"
+            "Используйте формат: дд.мм.гг чч:мм\n\n"
+            "Пример: 25.12.24 15:30"
+        )
+        return WAITING_FOR_DEADLINE
+    
+    context.user_data['deadline'] = deadline
+    
+    # Задаем следующий вопрос
+    await update.message.reply_text(
+        "3️⃣ Введите описание задачи (можно пропустить, отправьте '-' или 'пропустить')"
+    )
+    
+    return WAITING_FOR_DESCRIPTION
+
+
+async def handle_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка ответа на вопрос об описании"""
+    if not update.message or not update.message.text:
+        return WAITING_FOR_DESCRIPTION
+    
+    description = update.message.text.strip()
+    
+    # Проверяем, хочет ли пользователь пропустить
+    if description.lower() in ['-', 'пропустить', 'skip', 'нет']:
+        description = ""
+    
+    context.user_data['description'] = description
+    
+    # Задаем последний вопрос
+    await update.message.reply_text(
+        "4️⃣ Прикрепите файлы (если нужно, отправьте файлы, или отправьте '-' чтобы пропустить)"
+    )
+    
+    return WAITING_FOR_FILES
+
+
+async def handle_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка файлов или завершение создания задачи"""
+    # Проверяем, хочет ли пользователь пропустить файлы
+    if update.message and update.message.text:
+        text = update.message.text.strip()
+        if text.lower() in ['-', 'пропустить', 'skip', 'нет', 'готово']:
+            # Пропускаем файлы и создаем задачу
+            return await create_task(update, context)
+    
+    # Обработка файлов
+    if update.message and update.message.document:
+        file = await update.message.document.get_file()
+        file_data = await file.download_as_bytearray()
+        
+        # Сохраняем информацию о файле
+        # В реальности нужно загрузить файл в Битрикс24
+        if 'task_files' not in context.user_data:
+            context.user_data['task_files'] = []
+        
+        context.user_data['task_files'].append({
+            'filename': update.message.document.file_name,
+            'data': file_data
+        })
+        
+        await update.message.reply_text(
+            f"✅ Файл '{update.message.document.file_name}' получен.\n"
+            f"Отправьте еще файлы или '-' чтобы завершить."
+        )
+        return WAITING_FOR_FILES
+    
+    if update.message and update.message.photo:
+        # Обработка фото
+        photo = update.message.photo[-1]  # Берем фото наибольшего размера
+        file = await photo.get_file()
+        file_data = await file.download_as_bytearray()
+        
+        if 'task_files' not in context.user_data:
+            context.user_data['task_files'] = []
+        
+        context.user_data['task_files'].append({
+            'filename': f'photo_{photo.file_id}.jpg',
+            'data': file_data
+        })
+        
+        await update.message.reply_text(
+            "✅ Фото получено.\n"
+            "Отправьте еще файлы или '-' чтобы завершить."
+        )
+        return WAITING_FOR_FILES
+    
+    # Если нет файлов и нет текста "-", ждем дальше
+    if update.message:
+        await update.message.reply_text(
+            "Отправьте файлы или '-' чтобы завершить создание задачи."
+        )
+    
+    return WAITING_FOR_FILES
+
+
+async def create_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Создание задачи в Битрикс24"""
     try:
-        # Создаем задачу в Битрикс24
+        task_title = context.user_data.get('task_title')
+        responsible_ids = context.user_data.get('responsible_ids')
+        creator_id = context.user_data.get('creator_id')
+        description = context.user_data.get('description', '')
+        deadline = context.user_data.get('deadline')
+        
+        if not all([task_title, responsible_ids, creator_id]):
+            await update.message.reply_text(
+                "❌ Ошибка: не хватает данных для создания задачи."
+            )
+            return ConversationHandler.END
+        
+        # Создаем задачу
         result = bitrix_client.create_task(
-            title=task_text[:100],  # Ограничение длины названия
-            responsible_id=bitrix_user_id,
+            title=task_title,
+            responsible_ids=responsible_ids,
             creator_id=creator_id,
-            description=task_text if len(task_text) > 100 else ""
+            description=description,
+            deadline=deadline,
+            file_ids=None  # Файлы пока не загружаем
         )
         
         if result.get("result") and result["result"].get("task"):
             task_id = result["result"]["task"]["id"]
-            await update.message.reply_text(
+            
+            # Формируем список ответственных
+            responsibles_info = []
+            for resp_id in responsible_ids:
+                user_info = bitrix_client.get_user_by_id(resp_id)
+                if user_info:
+                    name = f"{user_info.get('NAME', '')} {user_info.get('LAST_NAME', '')}".strip()
+                    responsibles_info.append(name)
+            
+            response_text = (
                 f"✅ Задача создана!\n\n"
-                f"📋 Задача: {task_text}\n"
-                f"👤 Ответственный: {user_info.get('NAME', '')} {user_info.get('LAST_NAME', '')}\n"
-                f"🆔 ID задачи: {task_id}"
+                f"📋 Задача: {task_title}\n"
+                f"👤 Ответственные: {', '.join(responsibles_info)}\n"
             )
+            
+            if deadline:
+                response_text += f"📅 Срок: {deadline}\n"
+            
+            if description:
+                response_text += f"📝 Описание: {description[:100]}...\n" if len(description) > 100 else f"📝 Описание: {description}\n"
+            
+            response_text += f"🆔 ID задачи: {task_id}"
+            
+            await update.message.reply_text(response_text)
         else:
+            error_msg = result.get('error_description', 'Неизвестная ошибка')
             await update.message.reply_text(
-                f"❌ Ошибка при создании задачи: {result.get('error_description', 'Неизвестная ошибка')}"
+                f"❌ Ошибка при создании задачи: {error_msg}"
             )
     except Exception as e:
         logger.error(f"Ошибка при создании задачи: {e}", exc_info=True)
         await update.message.reply_text(
             f"❌ Произошла ошибка при создании задачи. Попробуйте позже."
         )
+    finally:
+        # Очищаем данные пользователя
+        context.user_data.clear()
+    
+    return ConversationHandler.END
+
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отмена создания задачи"""
+    context.user_data.clear()
+    await update.message.reply_text("❌ Создание задачи отменено.")
+    return ConversationHandler.END
 
 
 def main():
@@ -198,11 +544,40 @@ def main():
     # Создаем приложение
     application = Application.builder().token(token).build()
     
+    # Создаем ConversationHandler для диалога создания задачи
+    task_creation_handler = ConversationHandler(
+        entry_points=[
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND,
+                start_task_creation
+            )
+        ],
+        states={
+            WAITING_FOR_RESPONSIBLES: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_responsibles)
+            ],
+            WAITING_FOR_DEADLINE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_deadline)
+            ],
+            WAITING_FOR_DESCRIPTION: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_description)
+            ],
+            WAITING_FOR_FILES: [
+                MessageHandler(
+                    filters.TEXT | filters.Document.ALL | filters.PHOTO,
+                    handle_files
+                )
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+    
     # Регистрируем обработчики
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("link", link_user))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(CommandHandler("link_username", link_username))
+    application.add_handler(task_creation_handler)
     
     # Запускаем бота
     logger.info("Бот запущен...")
