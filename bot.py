@@ -4,8 +4,10 @@ Telegram бот для создания задач в Битрикс24 чере�
 import os
 import re
 import logging
+import threading
 from datetime import datetime
 from typing import Dict, Optional, List
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import (
@@ -540,6 +542,42 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    """Простой HTTP handler для health check"""
+    def do_GET(self):
+        if self.path == '/':
+            self.send_response(200)
+            self.send_header('Content-type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b'OK')
+        else:
+            self.send_response(404)
+            self.end_headers()
+    
+    def log_message(self, format, *args):
+        # Отключаем логирование health check запросов
+        pass
+
+
+def start_health_check_server(port: int):
+    """Запуск простого HTTP сервера для health check на корневом пути"""
+    try:
+        # Используем порт + 1 для health check, чтобы не конфликтовать с webhook
+        health_port = port + 1
+        server = HTTPServer(('0.0.0.0', health_port), HealthCheckHandler)
+        logger.info(f"Health check server запущен на порту {health_port}")
+        server.serve_forever()
+    except Exception as e:
+        logger.error(f"Ошибка при запуске health check server: {e}")
+
+
+def start_health_check_thread(port: int):
+    """Запуск health check server в отдельном потоке"""
+    thread = threading.Thread(target=start_health_check_server, args=(port,), daemon=True)
+    thread.start()
+    return thread
+
+
 
 
 def main():
@@ -607,21 +645,50 @@ def main():
         logger.info(f"Запуск бота с webhook на порту {port}...")
         logger.info(f"Webhook URL: {webhook_url}/{token}")
         
-        # Запускаем webhook (это блокирующий вызов, который держит процесс активным)
+        # Запускаем health check server в отдельном потоке (опционально)
+        # Railway может проверять health check на корневом пути
+        # Но так как webhook работает на /token, health check может быть полезен
+        # health_thread = start_health_check_thread(port)
+        
+        # Запускаем webhook (run_webhook автоматически вызывает initialize, start и запускает HTTP сервер)
+        # Это блокирующий вызов, который держит процесс активным
         try:
             logger.info("Инициализация webhook...")
+            
+            # run_webhook - это блокирующий вызов, который:
+            # 1. Вызывает application.initialize()
+            # 2. Вызывает application.start()
+            # 3. Устанавливает webhook через Telegram API
+            # 4. Запускает HTTP сервер на указанном порту и пути
+            # 5. Держит процесс активным, обрабатывая входящие запросы
             application.run_webhook(
                 listen="0.0.0.0",
                 port=port,
                 url_path=token,
                 webhook_url=f"{webhook_url}/{token}",
-                allowed_updates=Update.ALL_TYPES
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=True
             )
-            logger.info("Webhook запущен успешно")
+            # Этот код не должен выполняться, пока работает webhook
+            logger.warning("Webhook завершил работу (это не должно происходить в нормальном режиме)")
         except KeyboardInterrupt:
             logger.info("Получен сигнал остановки (KeyboardInterrupt)")
+            try:
+                application.stop()
+                application.shutdown()
+            except Exception as shutdown_error:
+                logger.error(f"Ошибка при остановке: {shutdown_error}")
         except Exception as e:
-            logger.error(f"Ошибка при запуске webhook: {e}", exc_info=True)
+            logger.error(f"Критическая ошибка при запуске webhook: {e}", exc_info=True)
+            import traceback
+            logger.error("Полный traceback:")
+            traceback.print_exc()
+            try:
+                application.stop()
+                application.shutdown()
+            except Exception as shutdown_error:
+                logger.error(f"Ошибка при остановке после ошибки: {shutdown_error}")
+            # Поднимаем исключение, чтобы Railway увидел ошибку и не перезапускал контейнер
             raise
     else:
         # Используем polling для локальной разработки
