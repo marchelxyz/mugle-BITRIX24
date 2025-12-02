@@ -5,6 +5,7 @@ import os
 import re
 import logging
 import threading
+import asyncio
 from datetime import datetime
 from typing import Dict, Optional, List
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -19,6 +20,11 @@ from telegram.ext import (
     ContextTypes
 )
 from bitrix24_client import Bitrix24Client
+try:
+    from aiohttp import web
+    AIOHTTP_AVAILABLE = True
+except ImportError:
+    AIOHTTP_AVAILABLE = False
 
 # Загрузка переменных окружения (только если файл .env существует)
 # В Railway переменные окружения настраиваются в интерфейсе
@@ -545,7 +551,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 class HealthCheckHandler(BaseHTTPRequestHandler):
     """Простой HTTP handler для health check"""
     def do_GET(self):
-        if self.path == '/':
+        if self.path == '/' or self.path == '/health':
             self.send_response(200)
             self.send_header('Content-type', 'text/plain')
             self.end_headers()
@@ -562,10 +568,8 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
 def start_health_check_server(port: int):
     """Запуск простого HTTP сервера для health check на корневом пути"""
     try:
-        # Используем порт + 1 для health check, чтобы не конфликтовать с webhook
-        health_port = port + 1
-        server = HTTPServer(('0.0.0.0', health_port), HealthCheckHandler)
-        logger.info(f"Health check server запущен на порту {health_port}")
+        server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+        logger.info(f"Health check server запущен на порту {port}")
         server.serve_forever()
     except Exception as e:
         logger.error(f"Ошибка при запуске health check server: {e}")
@@ -645,51 +649,108 @@ def main():
         logger.info(f"Запуск бота с webhook на порту {port}...")
         logger.info(f"Webhook URL: {webhook_url}/{token}")
         
-        # Запускаем health check server в отдельном потоке (опционально)
-        # Railway может проверять health check на корневом пути
-        # Но так как webhook работает на /token, health check может быть полезен
-        # health_thread = start_health_check_thread(port)
-        
-        # Запускаем webhook (run_webhook автоматически вызывает initialize, start и запускает HTTP сервер)
-        # Это блокирующий вызов, который держит процесс активным
-        try:
-            logger.info("Инициализация webhook...")
-            
-            # run_webhook - это блокирующий вызов, который:
-            # 1. Вызывает application.initialize()
-            # 2. Вызывает application.start()
-            # 3. Устанавливает webhook через Telegram API
-            # 4. Запускает HTTP сервер на указанном порту и пути
-            # 5. Держит процесс активным, обрабатывая входящие запросы
-            application.run_webhook(
-                listen="0.0.0.0",
-                port=port,
-                url_path=token,
-                webhook_url=f"{webhook_url}/{token}",
-                allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=True
-            )
-            # Этот код не должен выполняться, пока работает webhook
-            logger.warning("Webhook завершил работу (это не должно происходить в нормальном режиме)")
-        except KeyboardInterrupt:
-            logger.info("Получен сигнал остановки (KeyboardInterrupt)")
+        # Запускаем webhook с использованием aiohttp для поддержки health check
+        if AIOHTTP_AVAILABLE:
             try:
-                application.stop()
-                application.shutdown()
-            except Exception as shutdown_error:
-                logger.error(f"Ошибка при остановке: {shutdown_error}")
-        except Exception as e:
-            logger.error(f"Критическая ошибка при запуске webhook: {e}", exc_info=True)
-            import traceback
-            logger.error("Полный traceback:")
-            traceback.print_exc()
+                logger.info("Инициализация webhook с aiohttp...")
+                
+                # Инициализируем и запускаем приложение
+                async def post_init(aio_app):
+                    await application.initialize()
+                    await application.start()
+                    # Устанавливаем webhook
+                    await application.bot.set_webhook(
+                        url=f"{webhook_url}/{token}",
+                        allowed_updates=Update.ALL_TYPES,
+                        drop_pending_updates=True
+                    )
+                    logger.info("Webhook запущен успешно")
+                
+                async def post_shutdown(aio_app):
+                    await application.stop()
+                    await application.shutdown()
+                
+                # Создаем aiohttp приложение
+                aio_app = web.Application()
+                
+                # Обработчик для health check
+                async def health_check(request):
+                    return web.Response(text='OK')
+                
+                # Обработчик для webhook от Telegram
+                async def webhook_handler(request):
+                    # Получаем данные от Telegram
+                    data = await request.json()
+                    update = Update.de_json(data, application.bot)
+                    
+                    # Обрабатываем обновление
+                    await application.process_update(update)
+                    
+                    return web.Response(text='OK')
+                
+                # Регистрируем маршруты
+                aio_app.router.add_get('/', health_check)
+                aio_app.router.add_get('/health', health_check)
+                aio_app.router.add_post(f'/{token}', webhook_handler)
+                
+                # Инициализируем приложение
+                aio_app.on_startup.append(post_init)
+                aio_app.on_cleanup.append(post_shutdown)
+                
+                # Запускаем сервер
+                logger.info(f"Запуск aiohttp сервера на 0.0.0.0:{port}...")
+                web.run_app(aio_app, host='0.0.0.0', port=port)
+                
+            except KeyboardInterrupt:
+                logger.info("Получен сигнал остановки (KeyboardInterrupt)")
+                try:
+                    asyncio.run(application.stop())
+                    asyncio.run(application.shutdown())
+                except Exception as shutdown_error:
+                    logger.error(f"Ошибка при остановке: {shutdown_error}")
+            except Exception as e:
+                logger.error(f"Критическая ошибка при запуске webhook: {e}", exc_info=True)
+                import traceback
+                logger.error("Полный traceback:")
+                traceback.print_exc()
+                try:
+                    asyncio.run(application.stop())
+                    asyncio.run(application.shutdown())
+                except Exception as shutdown_error:
+                    logger.error(f"Ошибка при остановке после ошибки: {shutdown_error}")
+                raise
+        else:
+            # Используем стандартный run_webhook, если aiohttp недоступен
             try:
-                application.stop()
-                application.shutdown()
-            except Exception as shutdown_error:
-                logger.error(f"Ошибка при остановке после ошибки: {shutdown_error}")
-            # Поднимаем исключение, чтобы Railway увидел ошибку и не перезапускал контейнер
-            raise
+                logger.info("Инициализация webhook...")
+                
+                application.run_webhook(
+                    listen="0.0.0.0",
+                    port=port,
+                    url_path=token,
+                    webhook_url=f"{webhook_url}/{token}",
+                    allowed_updates=Update.ALL_TYPES,
+                    drop_pending_updates=True
+                )
+                logger.warning("Webhook завершил работу (это не должно происходить в нормальном режиме)")
+            except KeyboardInterrupt:
+                logger.info("Получен сигнал остановки (KeyboardInterrupt)")
+                try:
+                    application.stop()
+                    application.shutdown()
+                except Exception as shutdown_error:
+                    logger.error(f"Ошибка при остановке: {shutdown_error}")
+            except Exception as e:
+                logger.error(f"Критическая ошибка при запуске webhook: {e}", exc_info=True)
+                import traceback
+                logger.error("Полный traceback:")
+                traceback.print_exc()
+                try:
+                    application.stop()
+                    application.shutdown()
+                except Exception as shutdown_error:
+                    logger.error(f"Ошибка при остановке после ошибки: {shutdown_error}")
+                raise
     else:
         # Используем polling для локальной разработки
         logger.info("Запуск бота в режиме polling...")
