@@ -654,39 +654,62 @@ def main():
             try:
                 logger.info("Инициализация webhook с aiohttp...")
                 
-                # Инициализируем и запускаем приложение
-                async def post_init(aio_app):
-                    await application.initialize()
-                    await application.start()
-                    # Устанавливаем webhook
-                    await application.bot.set_webhook(
-                        url=f"{webhook_url}/{token}",
-                        allowed_updates=Update.ALL_TYPES,
-                        drop_pending_updates=True
-                    )
-                    logger.info("Webhook запущен успешно")
-                
-                async def post_shutdown(aio_app):
-                    await application.stop()
-                    await application.shutdown()
-                
                 # Создаем aiohttp приложение
                 aio_app = web.Application()
                 
+                # Инициализируем Telegram приложение при старте aiohttp
+                async def post_init(aio_app):
+                    try:
+                        logger.info("Инициализация Telegram приложения...")
+                        await application.initialize()
+                        logger.info("Telegram приложение инициализировано")
+                        
+                        await application.start()
+                        logger.info("Telegram приложение запущено")
+                        
+                        # Устанавливаем webhook
+                        logger.info(f"Установка webhook на {webhook_url}/{token}...")
+                        webhook_result = await application.bot.set_webhook(
+                            url=f"{webhook_url}/{token}",
+                            allowed_updates=Update.ALL_TYPES,
+                            drop_pending_updates=True
+                        )
+                        logger.info(f"Webhook установлен успешно: {webhook_result}")
+                    except Exception as init_error:
+                        logger.error(f"КРИТИЧЕСКАЯ ОШИБКА при инициализации Telegram приложения: {init_error}", exc_info=True)
+                        # Не поднимаем исключение, чтобы сервер продолжал работать
+                        # Сервер должен работать даже если Telegram бот не инициализирован
+                        logger.warning("Сервер продолжит работу, но Telegram бот может быть недоступен")
+                
+                async def post_shutdown(aio_app):
+                    logger.info("post_shutdown вызван - остановка Telegram приложения...")
+                    try:
+                        await application.stop()
+                        await application.shutdown()
+                        logger.info("Telegram приложение остановлено")
+                    except Exception as shutdown_error:
+                        logger.error(f"Ошибка при остановке Telegram приложения: {shutdown_error}", exc_info=True)
+                
                 # Обработчик для health check
                 async def health_check(request):
+                    logger.debug(f"Health check запрос: {request.path}")
                     return web.Response(text='OK')
                 
                 # Обработчик для webhook от Telegram
                 async def webhook_handler(request):
-                    # Получаем данные от Telegram
-                    data = await request.json()
-                    update = Update.de_json(data, application.bot)
-                    
-                    # Обрабатываем обновление
-                    await application.process_update(update)
-                    
-                    return web.Response(text='OK')
+                    try:
+                        # Получаем данные от Telegram
+                        data = await request.json()
+                        update = Update.de_json(data, application.bot)
+                        
+                        # Обрабатываем обновление (Telegram ожидает быстрый ответ)
+                        # Обработка происходит в фоне через application.process_update
+                        await application.process_update(update)
+                        
+                        return web.Response(text='OK')
+                    except Exception as e:
+                        logger.error(f"Ошибка при обработке webhook: {e}", exc_info=True)
+                        return web.Response(text='Error', status=500)
                 
                 # Регистрируем маршруты
                 aio_app.router.add_get('/', health_check)
@@ -697,9 +720,49 @@ def main():
                 aio_app.on_startup.append(post_init)
                 aio_app.on_cleanup.append(post_shutdown)
                 
-                # Запускаем сервер
+                # Запускаем сервер используя явное управление event loop
                 logger.info(f"Запуск aiohttp сервера на 0.0.0.0:{port}...")
-                web.run_app(aio_app, host='0.0.0.0', port=port)
+                logger.info("Сервер будет работать до получения сигнала остановки...")
+                
+                # Используем явное управление event loop для лучшего контроля
+                async def run():
+                    # Создаем runner и запускаем сервер
+                    runner = web.AppRunner(aio_app)
+                    await runner.setup()
+                    site = web.TCPSite(runner, '0.0.0.0', port)
+                    await site.start()
+                    logger.info(f"Сервер успешно запущен на 0.0.0.0:{port}")
+                    
+                    # Ждем бесконечно (сервер будет работать до получения сигнала остановки)
+                    try:
+                        import signal
+                        stop = asyncio.Event()
+                        
+                        def signal_handler():
+                            logger.info("Получен сигнал остановки")
+                            stop.set()
+                        
+                        # Регистрируем обработчики сигналов
+                        loop = asyncio.get_running_loop()
+                        for sig in (signal.SIGTERM, signal.SIGINT):
+                            loop.add_signal_handler(sig, signal_handler)
+                        
+                        # Ждем сигнала остановки
+                        await stop.wait()
+                    except Exception as e:
+                        logger.error(f"Ошибка при работе сервера: {e}", exc_info=True)
+                    finally:
+                        logger.info("Остановка сервера...")
+                        await runner.cleanup()
+                
+                # Запускаем event loop
+                try:
+                    asyncio.run(run())
+                except KeyboardInterrupt:
+                    logger.info("Получен KeyboardInterrupt")
+                except Exception as run_error:
+                    logger.error(f"Ошибка при запуске сервера: {run_error}", exc_info=True)
+                    raise
                 
             except KeyboardInterrupt:
                 logger.info("Получен сигнал остановки (KeyboardInterrupt)")
