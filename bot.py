@@ -6,18 +6,20 @@ import re
 import logging
 import threading
 import asyncio
+import secrets
 from datetime import datetime
 from typing import Dict, Optional, List
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from dotenv import load_dotenv
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
     ConversationHandler,
     filters,
-    ContextTypes
+    ContextTypes,
+    CallbackQueryHandler
 )
 from bitrix24_client import Bitrix24Client
 try:
@@ -193,8 +195,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/start - Начать работу\n"
         "/help - Показать справку\n"
         "/link bitrix_id - Связать ваш Telegram аккаунт с ID пользователя Битрикс24\n"
+        "  (Telegram ID будет сохранен в профиле пользователя в Bitrix24)\n"
         "/link_username @username bitrix_id - Связать Telegram username с пользователем Битрикс24\n"
-        "/cancel - Отменить создание задачи"
+        "/cancel - Отменить создание задачи\n\n"
+        "💡 После команды /link бот автоматически определяет ваш аккаунт "
+        "по Telegram ID из Bitrix24!"
     )
 
 
@@ -204,7 +209,8 @@ async def link_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "Использование: /link bitrix_user_id\n\n"
             "Пример: /link 123\n\n"
-            "Эта команда свяжет ваш Telegram аккаунт с пользователем Битрикс24."
+            "Эта команда свяжет ваш Telegram аккаунт с пользователем Битрикс24.\n"
+            "Telegram ID будет сохранен в профиле пользователя в Bitrix24."
         )
         return
     
@@ -221,14 +227,36 @@ async def link_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
-        TELEGRAM_TO_BITRIX_MAPPING[telegram_user_id] = bitrix_user_id
-        await update.message.reply_text(
-            f"✅ Связь установлена:\n"
-            f"Ваш Telegram аккаунт → {user_info.get('NAME', '')} {user_info.get('LAST_NAME', '')} "
-            f"(ID: {bitrix_user_id})"
-        )
+        # Сохраняем Telegram ID в Bitrix24
+        success = bitrix_client.update_user_telegram_id(bitrix_user_id, telegram_user_id)
+        
+        if success:
+            # Также сохраняем в локальное хранилище для быстрого доступа
+            TELEGRAM_TO_BITRIX_MAPPING[telegram_user_id] = bitrix_user_id
+            
+            await update.message.reply_text(
+                f"✅ Связь установлена и сохранена в Bitrix24:\n"
+                f"Ваш Telegram аккаунт (ID: {telegram_user_id}) → "
+                f"{user_info.get('NAME', '')} {user_info.get('LAST_NAME', '')} "
+                f"(ID: {bitrix_user_id})\n\n"
+                f"Теперь бот будет автоматически определять ваш аккаунт!"
+            )
+        else:
+            # Если не удалось сохранить в Bitrix24, сохраняем только локально
+            TELEGRAM_TO_BITRIX_MAPPING[telegram_user_id] = bitrix_user_id
+            await update.message.reply_text(
+                f"⚠️ Связь установлена локально:\n"
+                f"Ваш Telegram аккаунт → {user_info.get('NAME', '')} {user_info.get('LAST_NAME', '')} "
+                f"(ID: {bitrix_user_id})\n\n"
+                f"Не удалось сохранить в Bitrix24. Проверьте права доступа вебхука."
+            )
     except ValueError:
         await update.message.reply_text("❌ ID пользователя должен быть числом")
+    except Exception as e:
+        logger.error(f"Ошибка при связывании пользователя: {e}", exc_info=True)
+        await update.message.reply_text(
+            f"❌ Произошла ошибка при связывании аккаунта. Попробуйте позже."
+        )
 
 
 async def link_username(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -284,14 +312,27 @@ async def start_task_creation(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     # Получаем ID создателя задачи
     telegram_user_id = update.effective_user.id
+    
+    # Сначала проверяем локальное хранилище
     creator_id = TELEGRAM_TO_BITRIX_MAPPING.get(telegram_user_id)
+    
+    # Если не найдено локально, ищем в Bitrix24
+    if not creator_id:
+        user_info = bitrix_client.get_user_by_telegram_id(telegram_user_id)
+        if user_info:
+            creator_id = int(user_info.get("ID"))
+            # Сохраняем в локальное хранилище для быстрого доступа
+            TELEGRAM_TO_BITRIX_MAPPING[telegram_user_id] = creator_id
+            logger.info(f"Пользователь найден в Bitrix24 по Telegram ID {telegram_user_id}: {creator_id}")
     
     if not creator_id:
         await update.message.reply_text(
             "❌ Ваш Telegram аккаунт не связан с Битрикс24.\n\n"
             "Используйте команду:\n"
             "/link bitrix_user_id\n\n"
-            "Чтобы узнать свой ID в Битрикс24, зайдите в профиль и посмотрите в URL."
+            "Чтобы узнать свой ID в Битрикс24, зайдите в профиль и посмотрите в URL.\n\n"
+            "После связывания ваш Telegram ID будет сохранен в Bitrix24, "
+            "и бот будет автоматически определять ваш аккаунт."
         )
         return ConversationHandler.END
     
@@ -548,6 +589,136 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+async def handle_reply_with_mention(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Обработчик для reply-сообщений с упоминанием бота
+    Когда пользователь отвечает на сообщение и тегает бота через @
+    """
+    if not update.message or not update.message.reply_to_message:
+        return
+    
+    message = update.message
+    reply_to = message.reply_to_message
+    bot_username = context.bot.username
+    
+    # Проверяем, что в сообщении есть упоминание бота
+    text = message.text or ""
+    text_lower = text.lower()
+    bot_username_lower = bot_username.lower()
+    
+    # Проверяем упоминание через @username или просто username
+    has_mention = (
+        f"@{bot_username_lower}" in text_lower or
+        bot_username_lower in text_lower or
+        (message.entities and any(
+            entity.type == "mention" and 
+            text[entity.offset:entity.offset + entity.length].lower() == f"@{bot_username_lower}"
+            for entity in message.entities
+        ))
+    )
+    
+    if not has_mention:
+        return
+    
+    # Получаем Telegram ID пользователя, который ответил (постановщик)
+    creator_telegram_id = message.from_user.id
+    
+    # Получаем Telegram ID автора сообщения, на которое отвечают (исполнитель)
+    responsible_telegram_id = reply_to.from_user.id
+    
+    # Получаем текст сообщения, на которое отвечают (будет описанием задачи)
+    original_message_text = reply_to.text or reply_to.caption or ""
+    
+    # Определяем Bitrix ID постановщика
+    creator_bitrix_id = TELEGRAM_TO_BITRIX_MAPPING.get(creator_telegram_id)
+    if not creator_bitrix_id:
+        creator_info = bitrix_client.get_user_by_telegram_id(creator_telegram_id)
+        if creator_info:
+            creator_bitrix_id = int(creator_info.get("ID"))
+            TELEGRAM_TO_BITRIX_MAPPING[creator_telegram_id] = creator_bitrix_id
+    
+    # Определяем Bitrix ID исполнителя
+    responsible_bitrix_id = TELEGRAM_TO_BITRIX_MAPPING.get(responsible_telegram_id)
+    if not responsible_bitrix_id:
+        responsible_info = bitrix_client.get_user_by_telegram_id(responsible_telegram_id)
+        if responsible_info:
+            responsible_bitrix_id = int(responsible_info.get("ID"))
+            TELEGRAM_TO_BITRIX_MAPPING[responsible_telegram_id] = responsible_bitrix_id
+    
+    if not creator_bitrix_id:
+        await message.reply_text(
+            "❌ Ваш Telegram аккаунт не связан с Битрикс24.\n\n"
+            "Используйте команду:\n"
+            "/link bitrix_user_id"
+        )
+        return
+    
+    if not responsible_bitrix_id:
+        # Если исполнитель не найден, все равно предлагаем создать задачу
+        # Пользователь сможет выбрать исполнителя в Mini App
+        responsible_bitrix_id = None
+        responsible_name = f"@{reply_to.from_user.username}" if reply_to.from_user.username else f"ID: {responsible_telegram_id}"
+        logger.warning(f"Исполнитель {responsible_telegram_id} не найден в Bitrix24, будет предложено выбрать в Mini App")
+    
+    # Получаем информацию о пользователях для отображения
+    creator_info = bitrix_client.get_user_by_id(creator_bitrix_id)
+    responsible_info = bitrix_client.get_user_by_id(responsible_bitrix_id)
+    
+    creator_name = f"{creator_info.get('NAME', '')} {creator_info.get('LAST_NAME', '')}".strip() if creator_info else f"ID: {creator_bitrix_id}"
+    responsible_name = f"{responsible_info.get('NAME', '')} {responsible_info.get('LAST_NAME', '')}".strip() if responsible_info else f"ID: {responsible_bitrix_id}"
+    
+    # Формируем данные для Mini App
+    webhook_url = os.getenv("WEBHOOK_URL") or os.getenv("RAILWAY_PUBLIC_DOMAIN")
+    if webhook_url and not webhook_url.startswith("http"):
+        webhook_url = f"https://{webhook_url}"
+    
+    if not webhook_url:
+        # Если нет webhook URL, используем альтернативный способ через callback
+        await message.reply_text(
+            "⚠️ Mini App недоступен. Используйте стандартный способ создания задачи через @ упоминание."
+        )
+        return
+    
+    # Создаем уникальный токен для сессии Mini App
+    session_token = secrets.token_urlsafe(32)
+    
+    # Сохраняем данные сессии (в продакшене лучше использовать БД или Redis)
+    # Время жизни сессии - 1 час
+    context.bot_data[f"miniapp_session_{session_token}"] = {
+        "creator_bitrix_id": creator_bitrix_id,
+        "responsible_bitrix_id": responsible_bitrix_id,  # Может быть None
+        "original_message_text": original_message_text,
+        "creator_name": creator_name,
+        "responsible_name": responsible_name,
+        "creator_telegram_id": creator_telegram_id,
+        "responsible_telegram_id": responsible_telegram_id,
+        "timestamp": datetime.now().isoformat()
+    }
+    
+    # Создаем кнопку для открытия Mini App
+    web_app_url = f"{webhook_url}/miniapp?token={session_token}"
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(
+            "📋 Создать задачу",
+            web_app=WebAppInfo(url=web_app_url)
+        )]
+    ])
+    
+    message_text = (
+        f"📋 Предложение создать задачу\n\n"
+        f"👤 Постановщик: {creator_name}\n"
+        f"🎯 Исполнитель: {responsible_name}\n"
+        f"📝 Текст сообщения будет добавлен в описание задачи\n\n"
+    )
+    
+    if not responsible_bitrix_id:
+        message_text += "⚠️ Исполнитель не найден в Bitrix24. Вы сможете выбрать его в форме.\n\n"
+    
+    message_text += "Нажмите кнопку ниже, чтобы открыть форму создания задачи:"
+    
+    await message.reply_text(message_text, reply_markup=keyboard)
+
+
 class HealthCheckHandler(BaseHTTPRequestHandler):
     """Простой HTTP handler для health check"""
     def do_GET(self):
@@ -628,6 +799,15 @@ def main():
     application.add_handler(CommandHandler("link", link_user))
     application.add_handler(CommandHandler("link_username", link_username))
     application.add_handler(task_creation_handler)
+    
+    # Обработчик для reply-сообщений с упоминанием бота
+    # Используем более простой фильтр - проверяем reply и наличие текста
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & filters.REPLY,
+            handle_reply_with_mention
+        )
+    )
     
     # Проверяем, используется ли webhook (для Railway/продакшена)
     port = int(os.getenv("PORT", 0))
@@ -711,10 +891,142 @@ def main():
                         logger.error(f"Ошибка при обработке webhook: {e}", exc_info=True)
                         return web.Response(text='Error', status=500)
                 
+                # Обработчик для Mini App HTML
+                async def miniapp_handler(request):
+                    try:
+                        # Читаем HTML файл
+                        # Определяем путь к файлу относительно текущего скрипта
+                        script_dir = os.path.dirname(os.path.abspath(__file__))
+                        html_path = os.path.join(script_dir, 'static', 'miniapp.html')
+                        
+                        if not os.path.exists(html_path):
+                            logger.error(f"HTML файл не найден: {html_path}")
+                            return web.Response(text='Файл приложения не найден', status=404)
+                        
+                        with open(html_path, 'r', encoding='utf-8') as f:
+                            html_content = f.read()
+                        return web.Response(text=html_content, content_type='text/html')
+                    except Exception as e:
+                        logger.error(f"Ошибка при загрузке Mini App: {e}", exc_info=True)
+                        return web.Response(text=f'Ошибка загрузки приложения: {str(e)}', status=500)
+                
+                # API: Получение данных сессии Mini App
+                async def miniapp_session_handler(request):
+                    try:
+                        token = request.query.get('token')
+                        if not token:
+                            return web.json_response({'error': 'Токен не указан'}, status=400)
+                        
+                        session_key = f"miniapp_session_{token}"
+                        session_data = application.bot_data.get(session_key)
+                        
+                        if not session_data:
+                            return web.json_response({'error': 'Сессия не найдена или истекла'}, status=404)
+                        
+                        # Возвращаем данные без чувствительной информации
+                        return web.json_response({
+                            'creator_bitrix_id': session_data.get('creator_bitrix_id'),
+                            'responsible_bitrix_id': session_data.get('responsible_bitrix_id'),
+                            'original_message_text': session_data.get('original_message_text', ''),
+                            'creator_name': session_data.get('creator_name', ''),
+                            'responsible_name': session_data.get('responsible_name', '')
+                        })
+                    except Exception as e:
+                        logger.error(f"Ошибка при получении сессии Mini App: {e}", exc_info=True)
+                        return web.json_response({'error': 'Внутренняя ошибка сервера'}, status=500)
+                
+                # API: Получение списка пользователей
+                async def miniapp_users_handler(request):
+                    try:
+                        # Получаем всех пользователей из Bitrix24
+                        # Для упрощения используем поиск по пустой строке или ограниченный список
+                        users = bitrix_client.search_users("")
+                        
+                        # Форматируем список пользователей
+                        users_list = []
+                        for user in users[:100]:  # Ограничиваем до 100 пользователей
+                            name = f"{user.get('NAME', '')} {user.get('LAST_NAME', '')}".strip()
+                            if name:
+                                users_list.append({
+                                    'id': int(user.get('ID')),
+                                    'name': name
+                                })
+                        
+                        return web.json_response(users_list)
+                    except Exception as e:
+                        logger.error(f"Ошибка при получении списка пользователей: {e}", exc_info=True)
+                        return web.json_response({'error': 'Ошибка загрузки пользователей'}, status=500)
+                
+                # API: Создание задачи из Mini App
+                async def miniapp_create_task_handler(request):
+                    try:
+                        data = await request.json()
+                        token = data.get('token')
+                        
+                        if not token:
+                            return web.json_response({'error': 'Токен не указан'}, status=400)
+                        
+                        session_key = f"miniapp_session_{token}"
+                        session_data = application.bot_data.get(session_key)
+                        
+                        if not session_data:
+                            return web.json_response({'error': 'Сессия не найдена или истекла'}, status=404)
+                        
+                        # Получаем данные из запроса
+                        title = data.get('title', '').strip()
+                        creator_id = data.get('creator_id')
+                        responsible_id = data.get('responsible_id')
+                        deadline = data.get('deadline')
+                        description = data.get('description', '').strip()
+                        
+                        if not title:
+                            return web.json_response({'error': 'Название задачи обязательно'}, status=400)
+                        if not creator_id:
+                            return web.json_response({'error': 'Постановщик не указан'}, status=400)
+                        if not responsible_id:
+                            return web.json_response({'error': 'Исполнитель не указан'}, status=400)
+                        
+                        # Создаем задачу
+                        result = bitrix_client.create_task(
+                            title=title,
+                            responsible_ids=[responsible_id],
+                            creator_id=creator_id,
+                            description=description,
+                            deadline=deadline,
+                            file_ids=None
+                        )
+                        
+                        if result.get("result") and result["result"].get("task"):
+                            task_id = result["result"]["task"]["id"]
+                            
+                            # Удаляем сессию после успешного создания
+                            if session_key in application.bot_data:
+                                del application.bot_data[session_key]
+                            
+                            # Получаем ссылку на задачу
+                            task_url = bitrix_client.get_task_url(task_id, creator_id)
+                            
+                            return web.json_response({
+                                'success': True,
+                                'task_id': task_id,
+                                'task_url': task_url
+                            })
+                        else:
+                            error_msg = result.get('error_description', 'Неизвестная ошибка')
+                            return web.json_response({'error': f'Ошибка создания задачи: {error_msg}'}, status=500)
+                            
+                    except Exception as e:
+                        logger.error(f"Ошибка при создании задачи из Mini App: {e}", exc_info=True)
+                        return web.json_response({'error': 'Внутренняя ошибка сервера'}, status=500)
+                
                 # Регистрируем маршруты
                 aio_app.router.add_get('/', health_check)
                 aio_app.router.add_get('/health', health_check)
                 aio_app.router.add_post(f'/{token}', webhook_handler)
+                aio_app.router.add_get('/miniapp', miniapp_handler)
+                aio_app.router.add_get('/api/miniapp/session', miniapp_session_handler)
+                aio_app.router.add_get('/api/miniapp/users', miniapp_users_handler)
+                aio_app.router.add_post('/api/miniapp/create-task', miniapp_create_task_handler)
                 
                 # Инициализируем приложение
                 aio_app.on_startup.append(post_init)

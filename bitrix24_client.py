@@ -190,3 +190,128 @@ class Bitrix24Client:
         else:
             # Альтернативный формат через общий раздел задач
             return f"https://{self.domain}/company/personal/user/0/tasks/task/view/{task_id}/"
+    
+    def ensure_telegram_id_field(self) -> bool:
+        """
+        Проверка и создание пользовательского поля UF_TELEGRAM_ID в Bitrix24
+        если оно еще не существует
+        
+        Returns:
+            True если поле существует или было создано, False в случае ошибки
+        """
+        try:
+            # Проверяем, существует ли поле
+            result = self._make_request("user.userfield.get", {"FIELD": "UF_TELEGRAM_ID"})
+            
+            if result.get("result") and len(result.get("result", [])) > 0:
+                # Поле уже существует
+                return True
+            
+            # Создаем поле, если его нет
+            field_data = {
+                "fields": {
+                    "FIELD_NAME": "UF_TELEGRAM_ID",
+                    "USER_TYPE_ID": "string",
+                    "XML_ID": "TELEGRAM_ID",
+                    "SORT": 100,
+                    "MULTIPLE": "N",
+                    "MANDATORY": "N",
+                    "SHOW_FILTER": "Y",
+                    "SHOW_IN_LIST": "Y",
+                    "EDIT_IN_LIST": "Y",
+                    "IS_SEARCHABLE": "Y",
+                    "SETTINGS": {
+                        "DEFAULT_VALUE": "",
+                        "SIZE": 20,
+                        "ROWS": 1,
+                        "MIN_LENGTH": 0,
+                        "MAX_LENGTH": 0,
+                        "REGEXP": ""
+                    }
+                }
+            }
+            
+            create_result = self._make_request("user.userfield.add", field_data)
+            return create_result.get("result") is not None
+            
+        except Exception as e:
+            # Если поле уже существует или произошла другая ошибка, продолжаем работу
+            # В Bitrix24 может быть ошибка, если поле уже существует, но это не критично
+            return True
+    
+    def update_user_telegram_id(self, user_id: int, telegram_id: int) -> bool:
+        """
+        Обновление Telegram ID пользователя в Bitrix24
+        
+        Args:
+            user_id: ID пользователя в Bitrix24
+            telegram_id: Telegram User ID
+            
+        Returns:
+            True если обновление прошло успешно, False в случае ошибки
+        """
+        try:
+            # Убеждаемся, что поле существует
+            self.ensure_telegram_id_field()
+            
+            # Обновляем пользователя
+            update_data = {
+                "ID": user_id,
+                "fields": {
+                    "UF_TELEGRAM_ID": str(telegram_id)
+                }
+            }
+            
+            result = self._make_request("user.update", update_data)
+            return result.get("result") is True
+            
+        except Exception as e:
+            return False
+    
+    def get_user_by_telegram_id(self, telegram_id: int) -> Optional[Dict]:
+        """
+        Поиск пользователя Bitrix24 по Telegram ID
+        
+        Args:
+            telegram_id: Telegram User ID
+            
+        Returns:
+            Информация о пользователе или None
+        """
+        try:
+            # Ищем пользователя по пользовательскому полю UF_TELEGRAM_ID
+            result = self._make_request("user.get", {
+                "FILTER": {
+                    "UF_TELEGRAM_ID": str(telegram_id)
+                }
+            })
+            
+            if result.get("result") and len(result.get("result", [])) > 0:
+                return result["result"][0]
+            
+        except Exception:
+            pass
+        
+        return None
+    
+    def get_user_telegram_id(self, user_id: int) -> Optional[int]:
+        """
+        Получение Telegram ID пользователя Bitrix24
+        
+        Args:
+            user_id: ID пользователя в Bitrix24
+            
+        Returns:
+            Telegram ID или None
+        """
+        try:
+            user_info = self.get_user_by_id(user_id)
+            if user_info and user_info.get("UF_TELEGRAM_ID"):
+                try:
+                    return int(user_info["UF_TELEGRAM_ID"])
+                except (ValueError, TypeError):
+                    return None
+        except Exception:
+            pass
+        
+        return None
