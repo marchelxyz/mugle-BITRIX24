@@ -724,55 +724,40 @@ async def handle_reply_with_mention(update: Update, context: ContextTypes.DEFAUL
         "timestamp": datetime.now().isoformat()
     }
     
-    # Создаем кнопку для открытия Mini App
-    # Правильно кодируем параметры URL
+    # Получаем username бота для создания Direct Link Mini App
+    bot_username = context.bot.username
+    if not bot_username:
+        logger.error("Bot username не установлен, невозможно создать Direct Link Mini App")
+        await message.reply_text(
+            "⚠️ Ошибка конфигурации: username бота не установлен. Обратитесь к администратору."
+        )
+        return
+    
+    # Для Direct Link Mini Apps используем формат: https://t.me/botusername?startapp=token
+    # Это позволяет открывать Mini App как мини-апп из публичных групп
+    # Согласно документации: https://core.telegram.org/bots/webapps#direct-link-mini-apps
+    # 
+    # ВАЖНО: Для работы этого формата нужно настроить Main Mini App через BotFather:
+    # 1. Откройте @BotFather в Telegram
+    # 2. Отправьте команду /newapp или выберите вашего бота -> Bot Settings -> Main Mini App
+    # 3. Укажите URL вашего Mini App (например: https://your-domain.com/miniapp)
+    # 4. После настройки ссылка https://t.me/botusername?startapp=token будет открывать Mini App
+    direct_link_url = f"https://t.me/{bot_username}?startapp={session_token}"
+    
+    # Также формируем прямой URL для Mini App (используется для приватных чатов и как fallback)
     query_params = urlencode({"token": session_token})
     web_app_url = f"{webhook_url}/miniapp?{query_params}"
     
     # Логируем URL для отладки
-    logger.info(f"Создание кнопки Web App с URL: {web_app_url}")
+    logger.info(f"Создание кнопки Web App")
+    logger.info(f"Direct Link URL: {direct_link_url}")
+    logger.info(f"Web App URL: {web_app_url}")
     logger.info(f"Webhook URL: {webhook_url}, Session token length: {len(session_token)}")
     logger.info(f"Тип чата: {message.chat.type}, Chat ID: {message.chat_id}")
     
-    # Проверяем, что URL валидный (начинается с https://)
-    if not web_app_url.startswith("https://"):
-        logger.error(f"Невалидный URL для Web App: {web_app_url}")
-        await message.reply_text(
-            "⚠️ Ошибка конфигурации: URL для Mini App невалидный. Обратитесь к администратору."
-        )
-        return
-    
-    # Проверяем длину URL (Telegram имеет ограничение)
-    if len(web_app_url) > 2048:
-        logger.error(f"URL слишком длинный: {len(web_app_url)} символов")
-        await message.reply_text(
-            "⚠️ Ошибка: URL слишком длинный. Попробуйте позже."
-        )
-        return
-    
-    # Валидация URL перед созданием WebAppInfo
-    # Telegram требует, чтобы URL был валидным HTTPS URL
-    from urllib.parse import urlparse
-    parsed_url = urlparse(web_app_url)
-    if parsed_url.scheme != 'https':
-        logger.error(f"Web App URL должен использовать HTTPS, получен: {parsed_url.scheme}")
-        await message.reply_text(
-            f"⚠️ Ошибка конфигурации: URL должен использовать HTTPS. Обратитесь к администратору."
-        )
-        return
-    if not parsed_url.netloc:
-        logger.error(f"Web App URL должен содержать домен, получен: {web_app_url}")
-        await message.reply_text(
-            f"⚠️ Ошибка конфигурации: URL должен содержать домен. Обратитесь к администратору."
-        )
-        return
-    
-    logger.info(f"URL валидирован: схема={parsed_url.scheme}, домен={parsed_url.netloc}")
-    
     # Проверяем тип чата
     # Web App кнопки работают только в приватных чатах согласно документации
-    # Но на практике они могут работать и в группах, если бот отправляет сообщение
-    # Используем обычную URL кнопку для групповых чатов как fallback
+    # Для публичных групп используем Direct Link Mini App формат
     chat_type = message.chat.type if hasattr(message.chat, 'type') else None
     is_private_chat = chat_type == 'private'
     
@@ -780,7 +765,7 @@ async def handle_reply_with_mention(update: Update, context: ContextTypes.DEFAUL
     
     try:
         if is_private_chat:
-            # Для приватных чатов используем Web App кнопку
+            # Для приватных чатов используем Web App кнопку с прямым URL
             # Создаем WebAppInfo объект
             # В python-telegram-bot 20.x WebAppInfo принимает только url
             web_app_info = WebAppInfo(url=web_app_url)
@@ -794,14 +779,16 @@ async def handle_reply_with_mention(update: Update, context: ContextTypes.DEFAUL
             )
             logger.info(f"Web App кнопка создана успешно")
         else:
-            # Для групповых чатов используем обычную URL кнопку
-            # Это работает везде, но открывает браузер вместо Web App
-            logger.info(f"Используем обычную URL кнопку для группового чата")
+            # Для групповых чатов используем Direct Link Mini App формат
+            # Формат: https://t.me/botusername?startapp=token
+            # Это позволяет открывать Mini App как мини-апп из публичных групп
+            # Согласно документации: https://core.telegram.org/bots/webapps#direct-link-mini-apps
+            logger.info(f"Используем Direct Link Mini App для группового чата")
             button = InlineKeyboardButton(
                 "📋 Создать задачу",  # Позиционный параметр для text
-                url=web_app_url  # Именованный параметр
+                url=direct_link_url  # Именованный параметр - Direct Link формат
             )
-            logger.info(f"URL кнопка создана успешно")
+            logger.info(f"Direct Link Mini App кнопка создана успешно")
         
         # Создаем клавиатуру
         keyboard = InlineKeyboardMarkup([[button]])

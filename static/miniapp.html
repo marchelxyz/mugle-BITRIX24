@@ -221,11 +221,37 @@
         tg.expand();
         
         // Получаем токен из URL
+        // Поддерживаем два формата:
+        // 1. Прямой URL: /miniapp?token=xxx
+        // 2. Direct Link Mini App: параметр tgWebAppStartParam (передается через startapp)
         const urlParams = new URLSearchParams(window.location.search);
-        const token = urlParams.get('token');
+        let token = urlParams.get('token');
+        
+        // Если токен не найден в параметре token, проверяем tgWebAppStartParam
+        // Это параметр, который передается при использовании Direct Link Mini App формата
+        // https://t.me/botusername?startapp=token
+        if (!token) {
+            token = urlParams.get('tgWebAppStartParam');
+            // Также проверяем через initData от Telegram WebApp API
+            if (!token && tg.initData) {
+                try {
+                    const initDataParams = new URLSearchParams(tg.initData);
+                    token = initDataParams.get('start_param');
+                } catch (e) {
+                    console.error('Ошибка парсинга initData:', e);
+                }
+            }
+        }
         
         let sessionData = null;
         let usersList = [];
+        
+        // Проверяем наличие токена
+        if (!token) {
+            showError('Токен сессии не найден. Пожалуйста, используйте кнопку из сообщения бота.');
+            document.getElementById('loading').classList.remove('show');
+            return;
+        }
         
         // Загружаем данные сессии
         async function loadSession() {
