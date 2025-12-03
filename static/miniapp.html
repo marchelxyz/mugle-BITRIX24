@@ -157,6 +157,117 @@
         .success.show {
             display: block;
         }
+        
+        /* Модальное окно для выбора пользователя */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .modal-overlay.show {
+            display: flex;
+        }
+        
+        .modal {
+            background: var(--tg-theme-bg-color, #ffffff);
+            border-radius: 12px;
+            padding: 20px;
+            max-width: 90%;
+            max-height: 80vh;
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+        }
+        
+        .modal-header {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 16px;
+            color: var(--tg-theme-text-color, #000000);
+        }
+        
+        .modal-search {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid var(--tg-theme-hint-color, #e0e0e0);
+            border-radius: 8px;
+            font-size: 15px;
+            margin-bottom: 12px;
+            background: var(--tg-theme-bg-color, #ffffff);
+            color: var(--tg-theme-text-color, #000000);
+        }
+        
+        .modal-search:focus {
+            outline: none;
+            border-color: var(--tg-theme-button-color, #3390ec);
+        }
+        
+        .modal-users-list {
+            flex: 1;
+            overflow-y: auto;
+            max-height: 50vh;
+            margin-bottom: 16px;
+        }
+        
+        .modal-user-item {
+            padding: 12px;
+            border-bottom: 1px solid var(--tg-theme-hint-color, #e0e0e0);
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        
+        .modal-user-item:hover {
+            background: var(--tg-theme-secondary-bg-color, #f0f0f0);
+        }
+        
+        .modal-user-item:active {
+            background: var(--tg-theme-button-color, #3390ec);
+            color: var(--tg-theme-button-text-color, #ffffff);
+        }
+        
+        .modal-user-name {
+            font-weight: 500;
+            color: var(--tg-theme-text-color, #000000);
+        }
+        
+        .modal-user-id {
+            font-size: 12px;
+            color: var(--tg-theme-hint-color, #999999);
+            margin-top: 4px;
+        }
+        
+        .modal-buttons {
+            display: flex;
+            gap: 8px;
+        }
+        
+        .modal-btn {
+            flex: 1;
+            padding: 12px;
+            border: none;
+            border-radius: 8px;
+            font-size: 15px;
+            font-weight: 500;
+            cursor: pointer;
+        }
+        
+        .modal-btn-cancel {
+            background: var(--tg-theme-secondary-bg-color, #f0f0f0);
+            color: var(--tg-theme-text-color, #000000);
+        }
+        
+        .modal-btn-cancel:active {
+            opacity: 0.8;
+        }
     </style>
 </head>
 <body>
@@ -212,6 +323,18 @@
         
         <div id="success" class="success">
             ✅ Задача успешно создана!
+        </div>
+    </div>
+    
+    <!-- Модальное окно для выбора пользователя -->
+    <div id="userModal" class="modal-overlay">
+        <div class="modal">
+            <div class="modal-header" id="modalTitle">Выбор пользователя</div>
+            <input type="text" id="modalSearch" class="modal-search" placeholder="Поиск по имени или ID...">
+            <div class="modal-users-list" id="modalUsersList"></div>
+            <div class="modal-buttons">
+                <button class="modal-btn modal-btn-cancel" onclick="closeUserModal()">Отмена</button>
+            </div>
         </div>
     </div>
     
@@ -336,6 +459,10 @@
             searchAndSelectUser('responsible', 'исполнителя');
         }
         
+        // Текущий тип выбора (creator или responsible)
+        let currentUserSelectType = null;
+        let currentUserSelectLabel = null;
+        
         // Поиск и выбор пользователя
         function searchAndSelectUser(type, label) {
             if (usersList.length === 0) {
@@ -343,53 +470,96 @@
                 return;
             }
             
-            // Показываем список пользователей (первые 20)
-            const displayList = usersList.slice(0, 20);
-            const userListText = displayList.map((u, idx) => `${idx + 1}. ${u.name} (ID: ${u.id})`).join('\n');
-            const fullListText = usersList.length > 20 ? 
-                userListText + `\n\n... и еще ${usersList.length - 20} пользователей` : 
-                userListText;
+            currentUserSelectType = type;
+            currentUserSelectLabel = label;
             
-            tg.showPopup({
-                title: `Выбор ${label}`,
-                message: `Введите номер (1-${displayList.length}), имя или ID:\n\n${fullListText}`,
-                buttons: [{type: 'ok'}]
-            }, () => {
-                // Используем простой prompt для ввода
-                const searchText = prompt(`Введите номер, имя или ID ${label}:`);
-                if (!searchText) return;
-                
-                const searchLower = searchText.trim().toLowerCase();
-                
-                // Ищем пользователя
-                let user = null;
-                
-                // Сначала проверяем номер
-                const num = parseInt(searchText);
-                if (!isNaN(num) && num > 0 && num <= displayList.length) {
-                    user = displayList[num - 1];
-                } else {
-                    // Ищем по имени или ID
-                    user = usersList.find(u => 
-                        u.name.toLowerCase().includes(searchLower) || 
-                        u.id.toString() === searchText.trim()
-                    );
-                }
-                
-                if (user) {
-                    if (type === 'creator') {
-                        document.getElementById('creatorName').value = user.name;
-                        document.getElementById('creatorId').value = user.id;
-                    } else {
-                        document.getElementById('responsibleName').value = user.name;
-                        document.getElementById('responsibleId').value = user.id;
-                    }
-                    tg.showAlert(`✅ Выбран ${label}: ${user.name}`);
-                } else {
-                    tg.showAlert(`❌ Пользователь не найден. Попробуйте другой поисковый запрос.`);
-                }
+            // Устанавливаем заголовок модального окна
+            document.getElementById('modalTitle').textContent = `Выбор ${label}`;
+            
+            // Очищаем поле поиска
+            document.getElementById('modalSearch').value = '';
+            
+            // Показываем всех пользователей
+            renderUsersList(usersList);
+            
+            // Показываем модальное окно
+            document.getElementById('userModal').classList.add('show');
+            
+            // Фокус на поле поиска
+            setTimeout(() => {
+                document.getElementById('modalSearch').focus();
+            }, 100);
+        }
+        
+        // Закрытие модального окна
+        function closeUserModal() {
+            document.getElementById('userModal').classList.remove('show');
+            currentUserSelectType = null;
+            currentUserSelectLabel = null;
+        }
+        
+        // Отрисовка списка пользователей
+        function renderUsersList(users) {
+            const listContainer = document.getElementById('modalUsersList');
+            listContainer.innerHTML = '';
+            
+            if (users.length === 0) {
+                listContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: var(--tg-theme-hint-color, #999999);">Пользователи не найдены</div>';
+                return;
+            }
+            
+            users.forEach(user => {
+                const userItem = document.createElement('div');
+                userItem.className = 'modal-user-item';
+                userItem.innerHTML = `
+                    <div class="modal-user-name">${user.name}</div>
+                    <div class="modal-user-id">ID: ${user.id}</div>
+                `;
+                userItem.onclick = () => selectUser(user);
+                listContainer.appendChild(userItem);
             });
         }
+        
+        // Выбор пользователя
+        function selectUser(user) {
+            if (!currentUserSelectType || !user) return;
+            
+            if (currentUserSelectType === 'creator') {
+                document.getElementById('creatorName').value = user.name;
+                document.getElementById('creatorId').value = user.id;
+            } else {
+                document.getElementById('responsibleName').value = user.name;
+                document.getElementById('responsibleId').value = user.id;
+            }
+            
+            closeUserModal();
+            tg.showAlert(`✅ Выбран ${currentUserSelectLabel}: ${user.name}`);
+        }
+        
+        // Поиск пользователей при вводе
+        document.getElementById('modalSearch').addEventListener('input', (e) => {
+            const searchText = e.target.value.trim().toLowerCase();
+            
+            if (!searchText) {
+                renderUsersList(usersList);
+                return;
+            }
+            
+            // Фильтруем пользователей по имени или ID
+            const filtered = usersList.filter(u => 
+                u.name.toLowerCase().includes(searchText) || 
+                u.id.toString().includes(searchText)
+            );
+            
+            renderUsersList(filtered);
+        });
+        
+        // Закрытие модального окна при клике на overlay
+        document.getElementById('userModal').addEventListener('click', (e) => {
+            if (e.target.id === 'userModal') {
+                closeUserModal();
+            }
+        });
         
         // Обработка отправки формы
         document.getElementById('taskForm').addEventListener('submit', async (e) => {
