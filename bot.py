@@ -732,6 +732,7 @@ async def handle_reply_with_mention(update: Update, context: ContextTypes.DEFAUL
     # Логируем URL для отладки
     logger.info(f"Создание кнопки Web App с URL: {web_app_url}")
     logger.info(f"Webhook URL: {webhook_url}, Session token length: {len(session_token)}")
+    logger.info(f"Тип чата: {message.chat.type}, Chat ID: {message.chat_id}")
     
     # Проверяем, что URL валидный (начинается с https://)
     if not web_app_url.startswith("https://"):
@@ -749,58 +750,94 @@ async def handle_reply_with_mention(update: Update, context: ContextTypes.DEFAUL
         )
         return
     
-    try:
-        # Валидация URL перед созданием WebAppInfo
-        # Telegram требует, чтобы URL был валидным HTTPS URL
-        from urllib.parse import urlparse
-        parsed_url = urlparse(web_app_url)
-        if parsed_url.scheme != 'https':
-            raise ValueError(f"Web App URL должен использовать HTTPS, получен: {parsed_url.scheme}")
-        if not parsed_url.netloc:
-            raise ValueError(f"Web App URL должен содержать домен, получен: {web_app_url}")
-        
-        logger.info(f"URL валидирован: схема={parsed_url.scheme}, домен={parsed_url.netloc}")
-        
-        # Создаем WebAppInfo объект
-        # В python-telegram-bot 20.x используется именно такой синтаксис
-        web_app_info = WebAppInfo(url=web_app_url)
-        logger.info(f"WebAppInfo создан успешно")
-        
-        # Создаем кнопку с Web App
-        # В python-telegram-bot 20.x параметр называется web_app
-        # Важно: используем позиционные аргументы для совместимости
-        button = InlineKeyboardButton(
-            text="📋 Создать задачу",
-            web_app=web_app_info
+    # Валидация URL перед созданием WebAppInfo
+    # Telegram требует, чтобы URL был валидным HTTPS URL
+    from urllib.parse import urlparse
+    parsed_url = urlparse(web_app_url)
+    if parsed_url.scheme != 'https':
+        logger.error(f"Web App URL должен использовать HTTPS, получен: {parsed_url.scheme}")
+        await message.reply_text(
+            f"⚠️ Ошибка конфигурации: URL должен использовать HTTPS. Обратитесь к администратору."
         )
-        logger.info(f"Кнопка создана успешно")
+        return
+    if not parsed_url.netloc:
+        logger.error(f"Web App URL должен содержать домен, получен: {web_app_url}")
+        await message.reply_text(
+            f"⚠️ Ошибка конфигурации: URL должен содержать домен. Обратитесь к администратору."
+        )
+        return
+    
+    logger.info(f"URL валидирован: схема={parsed_url.scheme}, домен={parsed_url.netloc}")
+    
+    # Проверяем тип чата
+    # Web App кнопки работают только в приватных чатах согласно документации
+    # Но на практике они могут работать и в группах, если бот отправляет сообщение
+    # Используем обычную URL кнопку для групповых чатов как fallback
+    chat_type = message.chat.type if hasattr(message.chat, 'type') else None
+    is_private_chat = chat_type == 'private'
+    
+    logger.info(f"Тип чата определен: {chat_type}, приватный: {is_private_chat}")
+    
+    try:
+        if is_private_chat:
+            # Для приватных чатов используем Web App кнопку
+            # Создаем WebAppInfo объект
+            # В python-telegram-bot 20.x WebAppInfo принимает только url
+            web_app_info = WebAppInfo(url=web_app_url)
+            logger.info(f"WebAppInfo создан успешно для приватного чата, URL: {web_app_url[:100]}...")
+            
+            # Создаем кнопку с Web App
+            # В python-telegram-bot 20.x первый параметр - text (позиционный), остальные - именованные
+            button = InlineKeyboardButton(
+                "📋 Создать задачу",  # Позиционный параметр для text
+                web_app=web_app_info  # Именованный параметр
+            )
+            logger.info(f"Web App кнопка создана успешно")
+        else:
+            # Для групповых чатов используем обычную URL кнопку
+            # Это работает везде, но открывает браузер вместо Web App
+            logger.info(f"Используем обычную URL кнопку для группового чата")
+            button = InlineKeyboardButton(
+                "📋 Создать задачу",  # Позиционный параметр для text
+                url=web_app_url  # Именованный параметр
+            )
+            logger.info(f"URL кнопка создана успешно")
         
         # Создаем клавиатуру
         keyboard = InlineKeyboardMarkup([[button]])
         logger.info(f"Клавиатура создана успешно")
         
-    except ValueError as e:
-        # ValueError может возникнуть при валидации URL
-        logger.error(f"ValueError при создании кнопки Web App: {e}", exc_info=True)
-        await message.reply_text(
-            f"⚠️ Ошибка конфигурации: {str(e)}. Обратитесь к администратору."
-        )
-        return
     except TypeError as e:
         # TypeError может возникнуть, если неправильные параметры
-        logger.error(f"TypeError при создании кнопки Web App: {e}", exc_info=True)
-        logger.error(f"Проверьте синтаксис InlineKeyboardButton и WebAppInfo")
-        await message.reply_text(
-            "⚠️ Ошибка при создании кнопки. Попробуйте позже."
-        )
-        return
+        logger.error(f"TypeError при создании кнопки: {e}", exc_info=True)
+        logger.error(f"Проверьте синтаксис InlineKeyboardButton")
+        # Fallback: используем обычную URL кнопку
+        logger.info("Попытка создать обычную URL кнопку как fallback")
+        try:
+            button = InlineKeyboardButton("📋 Создать задачу", url=web_app_url)
+            keyboard = InlineKeyboardMarkup([[button]])
+            logger.info("URL кнопка создана как fallback")
+        except Exception as fallback_error:
+            logger.error(f"Ошибка при создании fallback кнопки: {fallback_error}", exc_info=True)
+            await message.reply_text(
+                "⚠️ Ошибка при создании кнопки. Попробуйте позже."
+            )
+            return
     except Exception as e:
-        logger.error(f"Ошибка при создании кнопки Web App: {e}", exc_info=True)
+        logger.error(f"Ошибка при создании кнопки: {e}", exc_info=True)
         logger.error(f"Тип ошибки: {type(e).__name__}")
-        await message.reply_text(
-            "⚠️ Ошибка при создании кнопки. Попробуйте позже."
-        )
-        return
+        # Fallback: используем обычную URL кнопку
+        logger.info("Попытка создать обычную URL кнопку как fallback")
+        try:
+            button = InlineKeyboardButton("📋 Создать задачу", url=web_app_url)
+            keyboard = InlineKeyboardMarkup([[button]])
+            logger.info("URL кнопка создана как fallback")
+        except Exception as fallback_error:
+            logger.error(f"Ошибка при создании fallback кнопки: {fallback_error}", exc_info=True)
+            await message.reply_text(
+                "⚠️ Ошибка при создании кнопки. Попробуйте позже."
+            )
+            return
     
     message_text = (
         f"📋 Предложение создать задачу\n\n"
