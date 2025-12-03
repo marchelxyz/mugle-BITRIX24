@@ -317,12 +317,34 @@ class Bitrix24Client:
                 return True
             else:
                 error = create_result.get("error", "Неизвестная ошибка")
+                error_description = create_result.get("error_description", "")
                 logger.error(f"❌ Не удалось создать поле UF_TELEGRAM_ID: {error}")
+                if error_description:
+                    logger.error(f"   Описание ошибки: {error_description}")
+                
+                # Проверяем типичные ошибки прав доступа
+                if error == "WRONG_AUTH" or error == "NO_AUTH_FOUND" or "ACCESS_DENIED" in str(error).upper():
+                    logger.error("   ⚠️ Проблема с правами доступа вебхука!")
+                    logger.error("   Решение: Создайте поле UF_TELEGRAM_ID вручную через интерфейс Bitrix24:")
+                    logger.error("   Прямой URL: https://YOUR-DOMAIN.bitrix24.ru/bitrix/admin/userfield_edit.php?ENTITY_ID=USER&lang=ru")
+                    logger.error("   Или через меню: Настройки → Настройки компании → Пользовательские поля")
+                    logger.error("   Код поля: UF_TELEGRAM_ID, Тип: Строка")
+                
                 return False
             
         except Exception as e:
             # Логируем ошибку для диагностики
             logger.error(f"Ошибка при проверке/создании поля UF_TELEGRAM_ID: {e}", exc_info=True)
+            
+            # Проверяем, является ли это ошибкой прав доступа
+            error_str = str(e).upper()
+            if "401" in error_str or "ACCESS_DENIED" in error_str or "WRONG_AUTH" in error_str:
+                logger.error("   ⚠️ Вебхук не имеет прав на создание пользовательских полей!")
+                logger.error("   Решение: Создайте поле UF_TELEGRAM_ID вручную через интерфейс Bitrix24:")
+                logger.error("   Прямой URL: https://YOUR-DOMAIN.bitrix24.ru/bitrix/admin/userfield_edit.php?ENTITY_ID=USER&lang=ru")
+                logger.error("   Или через меню: Настройки → Настройки компании → Пользовательские поля")
+                logger.error("   Код поля: UF_TELEGRAM_ID, Тип: Строка")
+            
             # Возвращаем True, чтобы бот продолжал работать
             # Проблема может быть в правах вебхука или поле уже существует
             return True
