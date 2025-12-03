@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Создание задачи</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: var(--tg-theme-bg-color, #ffffff);
+            color: var(--tg-theme-text-color, #000000);
+            padding: 16px;
+            min-height: 100vh;
+        }
+        
+        .container {
+            max-width: 100%;
+        }
+        
+        h1 {
+            font-size: 20px;
+            margin-bottom: 20px;
+            color: var(--tg-theme-text-color, #000000);
+        }
+        
+        .form-group {
+            margin-bottom: 16px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            color: var(--tg-theme-hint-color, #999999);
+        }
+        
+        input, textarea, select {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid var(--tg-theme-hint-color, #e0e0e0);
+            border-radius: 8px;
+            font-size: 15px;
+            background: var(--tg-theme-bg-color, #ffffff);
+            color: var(--tg-theme-text-color, #000000);
+            font-family: inherit;
+        }
+        
+        input:focus, textarea:focus, select:focus {
+            outline: none;
+            border-color: var(--tg-theme-button-color, #3390ec);
+        }
+        
+        textarea {
+            resize: vertical;
+            min-height: 80px;
+        }
+        
+        .user-select {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .user-select input {
+            flex: 1;
+        }
+        
+        .btn-change {
+            padding: 8px 16px;
+            background: var(--tg-theme-button-color, #3390ec);
+            color: var(--tg-theme-button-text-color, #ffffff);
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        
+        .btn-change:active {
+            opacity: 0.8;
+        }
+        
+        .original-message {
+            background: var(--tg-theme-secondary-bg-color, #f0f0f0);
+            padding: 12px;
+            border-radius: 8px;
+            margin-bottom: 16px;
+            font-size: 14px;
+            color: var(--tg-theme-text-color, #000000);
+        }
+        
+        .original-message-label {
+            font-size: 12px;
+            color: var(--tg-theme-hint-color, #999999);
+            margin-bottom: 6px;
+        }
+        
+        .btn-submit {
+            width: 100%;
+            padding: 14px;
+            background: var(--tg-theme-button-color, #3390ec);
+            color: var(--tg-theme-button-text-color, #ffffff);
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 500;
+            cursor: pointer;
+            margin-top: 20px;
+        }
+        
+        .btn-submit:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        
+        .btn-submit:active:not(:disabled) {
+            opacity: 0.8;
+        }
+        
+        .error {
+            color: #ff3333;
+            font-size: 14px;
+            margin-top: 8px;
+            display: none;
+        }
+        
+        .error.show {
+            display: block;
+        }
+        
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+            color: var(--tg-theme-hint-color, #999999);
+        }
+        
+        .loading.show {
+            display: block;
+        }
+        
+        .success {
+            display: none;
+            text-align: center;
+            padding: 20px;
+            color: #4caf50;
+        }
+        
+        .success.show {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📋 Создание задачи</h1>
+        
+        <div id="loading" class="loading">Загрузка...</div>
+        <div id="error" class="error"></div>
+        
+        <form id="taskForm" style="display: none;">
+            <div class="form-group">
+                <label>Название задачи</label>
+                <input type="text" id="taskTitle" required placeholder="Введите название задачи">
+            </div>
+            
+            <div class="form-group">
+                <label>Постановщик</label>
+                <div class="user-select">
+                    <input type="text" id="creatorName" readonly>
+                    <button type="button" class="btn-change" onclick="changeCreator()">Изменить</button>
+                </div>
+                <input type="hidden" id="creatorId">
+            </div>
+            
+            <div class="form-group">
+                <label>Исполнитель</label>
+                <div class="user-select">
+                    <input type="text" id="responsibleName" readonly>
+                    <button type="button" class="btn-change" onclick="changeResponsible()">Изменить</button>
+                </div>
+                <input type="hidden" id="responsibleId">
+            </div>
+            
+            <div class="form-group">
+                <label>Срок выполнения</label>
+                <input type="datetime-local" id="deadline">
+            </div>
+            
+            <div class="form-group">
+                <label>Описание</label>
+                <textarea id="description" placeholder="Дополнительное описание задачи"></textarea>
+            </div>
+            
+            <div class="form-group">
+                <div class="original-message">
+                    <div class="original-message-label">Текст сообщения:</div>
+                    <div id="originalMessage"></div>
+                </div>
+            </div>
+            
+            <button type="submit" class="btn-submit" id="submitBtn">Создать задачу</button>
+        </form>
+        
+        <div id="success" class="success">
+            ✅ Задача успешно создана!
+        </div>
+    </div>
+    
+    <script>
+        const tg = window.Telegram.WebApp;
+        tg.ready();
+        tg.expand();
+        
+        // Получаем токен из URL
+        const urlParams = new URLSearchParams(window.location.search);
+        const token = urlParams.get('token');
+        
+        let sessionData = null;
+        let usersList = [];
+        
+        // Загружаем данные сессии
+        async function loadSession() {
+            try {
+                const response = await fetch(`/api/miniapp/session?token=${token}`);
+                if (!response.ok) {
+                    throw new Error('Не удалось загрузить данные сессии');
+                }
+                const data = await response.json();
+                sessionData = data;
+                
+                // Заполняем форму
+                document.getElementById('creatorName').value = data.creator_name;
+                document.getElementById('creatorId').value = data.creator_bitrix_id;
+                
+                // Исполнитель может быть не указан
+                if (data.responsible_bitrix_id) {
+                    document.getElementById('responsibleName').value = data.responsible_name;
+                    document.getElementById('responsibleId').value = data.responsible_bitrix_id;
+                } else {
+                    document.getElementById('responsibleName').value = 'Не выбран';
+                    document.getElementById('responsibleId').value = '';
+                }
+                
+                document.getElementById('originalMessage').textContent = data.original_message_text || '(нет текста)';
+                
+                // Загружаем список пользователей для выбора
+                await loadUsers();
+                
+                document.getElementById('loading').classList.remove('show');
+                document.getElementById('taskForm').style.display = 'block';
+            } catch (error) {
+                showError(error.message);
+            }
+        }
+        
+        // Загружаем список пользователей
+        async function loadUsers() {
+            try {
+                const response = await fetch('/api/miniapp/users');
+                if (response.ok) {
+                    usersList = await response.json();
+                }
+            } catch (error) {
+                console.error('Ошибка загрузки пользователей:', error);
+            }
+        }
+        
+        // Изменение постановщика
+        function changeCreator() {
+            searchAndSelectUser('creator', 'постановщика');
+        }
+        
+        // Изменение исполнителя
+        function changeResponsible() {
+            searchAndSelectUser('responsible', 'исполнителя');
+        }
+        
+        // Поиск и выбор пользователя
+        function searchAndSelectUser(type, label) {
+            if (usersList.length === 0) {
+                tg.showAlert('Список пользователей не загружен. Попробуйте позже.');
+                return;
+            }
+            
+            // Показываем список пользователей (первые 20)
+            const displayList = usersList.slice(0, 20);
+            const userListText = displayList.map((u, idx) => `${idx + 1}. ${u.name} (ID: ${u.id})`).join('\n');
+            const fullListText = usersList.length > 20 ? 
+                userListText + `\n\n... и еще ${usersList.length - 20} пользователей` : 
+                userListText;
+            
+            tg.showPopup({
+                title: `Выбор ${label}`,
+                message: `Введите номер (1-${displayList.length}), имя или ID:\n\n${fullListText}`,
+                buttons: [{type: 'ok'}]
+            }, () => {
+                // Используем простой prompt для ввода
+                const searchText = prompt(`Введите номер, имя или ID ${label}:`);
+                if (!searchText) return;
+                
+                const searchLower = searchText.trim().toLowerCase();
+                
+                // Ищем пользователя
+                let user = null;
+                
+                // Сначала проверяем номер
+                const num = parseInt(searchText);
+                if (!isNaN(num) && num > 0 && num <= displayList.length) {
+                    user = displayList[num - 1];
+                } else {
+                    // Ищем по имени или ID
+                    user = usersList.find(u => 
+                        u.name.toLowerCase().includes(searchLower) || 
+                        u.id.toString() === searchText.trim()
+                    );
+                }
+                
+                if (user) {
+                    if (type === 'creator') {
+                        document.getElementById('creatorName').value = user.name;
+                        document.getElementById('creatorId').value = user.id;
+                    } else {
+                        document.getElementById('responsibleName').value = user.name;
+                        document.getElementById('responsibleId').value = user.id;
+                    }
+                    tg.showAlert(`✅ Выбран ${label}: ${user.name}`);
+                } else {
+                    tg.showAlert(`❌ Пользователь не найден. Попробуйте другой поисковый запрос.`);
+                }
+            });
+        }
+        
+        // Обработка отправки формы
+        document.getElementById('taskForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const submitBtn = document.getElementById('submitBtn');
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Создание...';
+            
+            const responsibleId = document.getElementById('responsibleId').value;
+            if (!responsibleId) {
+                tg.showAlert('Пожалуйста, выберите исполнителя');
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Создать задачу';
+                return;
+            }
+            
+            const formData = {
+                token: token,
+                title: document.getElementById('taskTitle').value,
+                creator_id: parseInt(document.getElementById('creatorId').value),
+                responsible_id: parseInt(responsibleId),
+                deadline: document.getElementById('deadline').value,
+                description: document.getElementById('description').value,
+                original_message_text: sessionData.original_message_text
+            };
+            
+            // Форматируем deadline если указан
+            if (formData.deadline) {
+                const date = new Date(formData.deadline);
+                formData.deadline = date.toISOString().slice(0, 19).replace('T', ' ');
+            }
+            
+            // Объединяем описание с оригинальным сообщением
+            if (formData.original_message_text) {
+                if (formData.description) {
+                    formData.description = formData.original_message_text + '\n\n' + formData.description;
+                } else {
+                    formData.description = formData.original_message_text;
+                }
+            }
+            
+            try {
+                const response = await fetch('/api/miniapp/create-task', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(formData)
+                });
+                
+                const result = await response.json();
+                
+                if (!response.ok) {
+                    throw new Error(result.error || 'Ошибка при создании задачи');
+                }
+                
+                // Успех
+                document.getElementById('taskForm').style.display = 'none';
+                document.getElementById('success').classList.add('show');
+                
+                // Закрываем Mini App через 2 секунды
+                setTimeout(() => {
+                    tg.close();
+                }, 2000);
+                
+            } catch (error) {
+                showError(error.message);
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Создать задачу';
+            }
+        });
+        
+        function showError(message) {
+            const errorEl = document.getElementById('error');
+            errorEl.textContent = message;
+            errorEl.classList.add('show');
+        }
+        
+        // Загружаем данные при загрузке страницы
+        loadSession();
+    </script>
+</body>
+</html>
