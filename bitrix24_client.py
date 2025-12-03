@@ -55,7 +55,8 @@ class Bitrix24Client:
         creator_id: int,
         description: str = "",
         deadline: str = None,
-        file_ids: List[int] = None
+        file_ids: List[int] = None,
+        department_id: int = None
     ) -> Dict:
         """
         Создание задачи в Битрикс24
@@ -67,6 +68,7 @@ class Bitrix24Client:
             description: Описание задачи
             deadline: Дедлайн задачи (формат: YYYY-MM-DD HH:MI:SS)
             file_ids: Список ID прикрепленных файлов
+            department_id: ID подразделения (опционально)
             
         Returns:
             Результат создания задачи
@@ -99,6 +101,16 @@ class Bitrix24Client:
         
         if file_ids:
             task_data["fields"]["UF_TASK_WEBDAV_FILES"] = file_ids
+        
+        # Добавляем подразделение, если указано
+        # Примечание: В Bitrix24 для задач может использоваться поле GROUP_ID (для группы) 
+        # или пользовательское поле типа UF_DEPARTMENT или UF_CRM_TASK_DEPARTMENT
+        # Если ваше поле называется по-другому, измените название поля ниже
+        # Для создания пользовательского поля используйте API user.userfield.add или настройте через интерфейс Bitrix24
+        if department_id:
+            # Используем GROUP_ID для подразделения (стандартное поле в Bitrix24)
+            # Если в вашем Bitrix24 используется другое поле, замените GROUP_ID на нужное
+            task_data["fields"]["GROUP_ID"] = department_id
         
         result = self._make_request("tasks.task.add", task_data)
         return result
@@ -436,3 +448,48 @@ class Bitrix24Client:
             logger.error(f"Ошибка при загрузке связей из Bitrix24: {e}", exc_info=True)
         
         return mappings
+    
+    def get_all_departments(self) -> List[Dict]:
+        """
+        Получение всех подразделений из Bitrix24
+        
+        Returns:
+            Список подразделений
+        """
+        try:
+            # Используем метод department.get для получения всех подразделений
+            result = self._make_request("department.get", {})
+            departments = result.get("result", [])
+            
+            if isinstance(departments, list):
+                return departments
+            elif isinstance(departments, dict):
+                return [departments]
+            
+            return []
+        except Exception as e:
+            logger.error(f"Ошибка при получении подразделений: {e}")
+            return []
+    
+    def get_department_by_id(self, department_id: int) -> Optional[Dict]:
+        """
+        Получение информации о подразделении по ID
+        
+        Args:
+            department_id: ID подразделения
+            
+        Returns:
+            Информация о подразделении или None
+        """
+        try:
+            result = self._make_request("department.get", {"ID": department_id})
+            departments = result.get("result", [])
+            
+            if departments:
+                if isinstance(departments, list) and len(departments) > 0:
+                    return departments[0]
+                elif isinstance(departments, dict):
+                    return departments
+        except Exception:
+            pass
+        return None

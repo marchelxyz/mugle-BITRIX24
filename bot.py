@@ -72,6 +72,58 @@ except Exception as e:
     logger.error(f"Ошибка при загрузке связей из Bitrix24: {e}", exc_info=True)
     logger.warning("Бот будет работать, но связи нужно будет устанавливать заново")
 
+# Загружаем и логируем все подразделения из Bitrix24 при старте
+def log_all_departments():
+    """Функция для логирования всех подразделений из Bitrix24"""
+    try:
+        departments = bitrix_client.get_all_departments()
+        if departments:
+            # Сортируем по ID для удобства
+            try:
+                departments_sorted = sorted(departments, key=lambda x: int(x.get('ID', 0)))
+            except (ValueError, TypeError):
+                departments_sorted = departments
+            
+            logger.info("")
+            logger.info("=" * 70)
+            logger.info("📋 СПИСОК ПОДРАЗДЕЛЕНИЙ ИЗ BITRIX24:")
+            logger.info("=" * 70)
+            logger.info(f"{'ID':<10} | {'Название':<40} | {'Родитель':<10}")
+            logger.info("-" * 70)
+            
+            for dept in departments_sorted:
+                dept_id = str(dept.get('ID', 'N/A'))
+                dept_name = dept.get('NAME', 'Без названия')
+                dept_parent = dept.get('PARENT', '')
+                dept_parent_str = str(dept_parent) if dept_parent else '-'
+                
+                # Обрезаем длинные названия для читаемости
+                dept_name_display = dept_name[:40] if len(dept_name) <= 40 else dept_name[:37] + "..."
+                
+                logger.info(f"{dept_id:<10} | {dept_name_display:<40} | {dept_parent_str:<10}")
+            
+            logger.info("-" * 70)
+            logger.info(f"✅ Всего найдено подразделений: {len(departments)}")
+            logger.info("=" * 70)
+            logger.info("")
+            
+            # Также выводим формат для THREAD_DEPARTMENT_MAPPING
+            if THREAD_TO_DEPARTMENT_MAPPING:
+                logger.info("💡 Текущий маппинг thread_id -> department_id:")
+                for thread_id, dept_id in sorted(THREAD_TO_DEPARTMENT_MAPPING.items()):
+                    dept_info = next((d for d in departments if str(d.get('ID')) == str(dept_id)), None)
+                    dept_name = dept_info.get('NAME', 'Неизвестно') if dept_info else 'Неизвестно'
+                    logger.info(f"   Thread ID {thread_id} -> Department ID {dept_id} ({dept_name})")
+                logger.info("")
+        else:
+            logger.info("ℹ️ В Bitrix24 не найдено подразделений")
+    except Exception as e:
+        logger.error(f"Ошибка при загрузке подразделений из Bitrix24: {e}", exc_info=True)
+        logger.warning("Бот будет работать, но список подразделений недоступен")
+
+# Вызываем функцию логирования при старте
+log_all_departments()
+
 # Состояния диалога
 WAITING_FOR_RESPONSIBLES, WAITING_FOR_DEADLINE, WAITING_FOR_DESCRIPTION, WAITING_FOR_FILES = range(4)
 
@@ -81,6 +133,28 @@ TELEGRAM_TO_BITRIX_MAPPING: Dict[int, int] = {}
 
 # Хранилище соответствий Telegram username -> Bitrix24 User ID (для поиска по имени)
 USERNAME_TO_BITRIX_MAPPING: Dict[str, int] = {}
+
+# Маппинг Telegram thread_id -> Bitrix24 Department ID
+# Формат: {thread_id: department_id}
+# thread_id - это ID темы в супергруппе Telegram
+# department_id - это ID подразделения в Bitrix24
+# Можно настроить через переменную окружения THREAD_DEPARTMENT_MAPPING в формате JSON:
+# {"123": 5, "456": 10} где 123 и 456 - thread_id, 5 и 10 - department_id
+THREAD_TO_DEPARTMENT_MAPPING: Dict[int, int] = {}
+
+# Загружаем маппинг из переменной окружения при старте
+try:
+    import json
+    thread_mapping_str = os.getenv("THREAD_DEPARTMENT_MAPPING")
+    if thread_mapping_str:
+        thread_mapping_dict = json.loads(thread_mapping_str)
+        # Преобразуем ключи в int (Telegram thread_id всегда int)
+        THREAD_TO_DEPARTMENT_MAPPING = {int(k): int(v) for k, v in thread_mapping_dict.items()}
+        logger.info(f"✅ Загружено {len(THREAD_TO_DEPARTMENT_MAPPING)} маппингов thread_id -> department_id")
+    else:
+        logger.info("ℹ️ THREAD_DEPARTMENT_MAPPING не установлен. Автоматический выбор отдела по теме отключен.")
+except Exception as e:
+    logger.warning(f"⚠️ Ошибка при загрузке THREAD_DEPARTMENT_MAPPING: {e}. Автоматический выбор отдела по теме отключен.")
 
 
 def parse_initial_message(text: str, bot_username: str) -> Optional[str]:
@@ -281,6 +355,16 @@ async def create_task_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     creator_info = bitrix_client.get_user_by_id(creator_bitrix_id)
     creator_name = f"{creator_info.get('NAME', '')} {creator_info.get('LAST_NAME', '')}".strip() if creator_info else f"ID: {creator_bitrix_id}"
     
+    # Получаем thread_id (ID темы в супергруппе), если сообщение отправлено в теме
+    thread_id = None
+    department_id = None
+    if update.message.message_thread_id:
+        thread_id = update.message.message_thread_id
+        # Автоматически определяем отдел на основе thread_id
+        department_id = THREAD_TO_DEPARTMENT_MAPPING.get(thread_id)
+        if department_id:
+            logger.info(f"Автоматически определен отдел {department_id} для thread_id {thread_id}")
+    
     # Сохраняем данные сессии
     context.bot_data[f"miniapp_session_{session_token}"] = {
         "creator_bitrix_id": creator_bitrix_id,
@@ -292,6 +376,8 @@ async def create_task_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         "responsible_telegram_id": None,
         "chat_id": update.message.chat_id,
         "message_id": update.message.message_id,
+        "thread_id": thread_id,  # Сохраняем thread_id для определения отдела
+        "department_id": department_id,  # Сохраняем автоматически определенный отдел
         "timestamp": datetime.now().isoformat()
     }
     
@@ -312,6 +398,75 @@ async def create_task_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
 
 
+async def departments_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для получения списка всех подразделений из Bitrix24"""
+    try:
+        departments = bitrix_client.get_all_departments()
+        
+        if not departments:
+            await update.message.reply_text(
+                "ℹ️ В Bitrix24 не найдено подразделений"
+            )
+            return
+        
+        # Формируем список подразделений
+        dept_list = []
+        for dept in departments:
+            dept_id = dept.get('ID', 'N/A')
+            dept_name = dept.get('NAME', 'Без названия')
+            dept_list.append(f"ID: {dept_id} | {dept_name}")
+        
+        # Разбиваем на части, если список слишком длинный (Telegram ограничивает длину сообщения)
+        message_text = "📋 Список подразделений из Bitrix24:\n\n"
+        current_message = message_text
+        
+        for dept_line in dept_list:
+            if len(current_message + dept_line + "\n") > 4000:  # Лимит Telegram ~4096 символов
+                await update.message.reply_text(current_message)
+                current_message = ""
+            
+            current_message += dept_line + "\n"
+        
+        if current_message != message_text:
+            await update.message.reply_text(current_message)
+        
+        # Также логируем в консоль с красивым форматированием
+        logger.info("")
+        logger.info("=" * 70)
+        logger.info("📋 СПИСОК ПОДРАЗДЕЛЕНИЙ ИЗ BITRIX24 (по запросу команды /departments):")
+        logger.info("=" * 70)
+        logger.info(f"{'ID':<10} | {'Название':<40} | {'Родитель':<10}")
+        logger.info("-" * 70)
+        
+        # Сортируем по ID для удобства
+        try:
+            departments_sorted = sorted(departments, key=lambda x: int(x.get('ID', 0)))
+        except (ValueError, TypeError):
+            departments_sorted = departments
+        
+        for dept in departments_sorted:
+            dept_id = str(dept.get('ID', 'N/A'))
+            dept_name = dept.get('NAME', 'Без названия')
+            dept_parent = dept.get('PARENT', '')
+            dept_parent_str = str(dept_parent) if dept_parent else '-'
+            
+            # Обрезаем длинные названия для читаемости
+            dept_name_display = dept_name[:40] if len(dept_name) <= 40 else dept_name[:37] + "..."
+            
+            logger.info(f"{dept_id:<10} | {dept_name_display:<40} | {dept_parent_str:<10}")
+        
+        logger.info("-" * 70)
+        logger.info(f"✅ Всего найдено подразделений: {len(departments)}")
+        logger.info("=" * 70)
+        logger.info("")
+        
+    except Exception as e:
+        logger.error(f"Ошибка при получении списка подразделений: {e}", exc_info=True)
+        await update.message.reply_text(
+            f"❌ Ошибка при получении списка подразделений: {e}"
+        )
+
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /help"""
     await update.message.reply_text(
@@ -327,6 +482,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/link bitrix_id - Связать ваш Telegram аккаунт с ID пользователя Битрикс24\n"
         "  (Telegram ID будет сохранен в профиле пользователя в Bitrix24)\n"
         "/link_username @username bitrix_id - Связать Telegram username с пользователем Битрикс24\n"
+        "/departments - Показать список всех подразделений из Bitrix24\n"
         "/cancel - Отменить создание задачи\n\n"
         "💡 После команды /link бот автоматически определяет ваш аккаунт "
         "по Telegram ID из Bitrix24!"
@@ -439,6 +595,16 @@ async def start_task_creation(update: Update, context: ContextTypes.DEFAULT_TYPE
     # Сохраняем данные задачи в контексте
     context.user_data['task_title'] = task_title
     context.user_data['task_files'] = []
+    
+    # Получаем thread_id (ID темы в супергруппе), если сообщение отправлено в теме
+    thread_id = None
+    if update.message.message_thread_id:
+        thread_id = update.message.message_thread_id
+        # Автоматически определяем отдел на основе thread_id
+        department_id = THREAD_TO_DEPARTMENT_MAPPING.get(thread_id)
+        if department_id:
+            context.user_data['department_id'] = department_id
+            logger.info(f"Автоматически определен отдел {department_id} для thread_id {thread_id}")
     
     # Получаем ID создателя задачи
     telegram_user_id = update.effective_user.id
@@ -654,6 +820,9 @@ async def create_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return ConversationHandler.END
         
+        # Получаем department_id из контекста (если был определен автоматически)
+        department_id = context.user_data.get('department_id')
+        
         # Создаем задачу
         result = bitrix_client.create_task(
             title=task_title,
@@ -661,7 +830,8 @@ async def create_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
             creator_id=creator_id,
             description=description,
             deadline=deadline,
-            file_ids=None  # Файлы пока не загружаем
+            file_ids=None,  # Файлы пока не загружаем
+            department_id=department_id
         )
         
         if result.get("result") and result["result"].get("task"):
@@ -781,6 +951,16 @@ async def handle_reply_with_mention(update: Update, context: ContextTypes.DEFAUL
     # Получаем текст сообщения, на которое отвечают (будет описанием задачи)
     original_message_text = reply_to.text or reply_to.caption or ""
     
+    # Получаем thread_id (ID темы в супергруппе), если сообщение отправлено в теме
+    thread_id = None
+    department_id = None
+    if message.message_thread_id:
+        thread_id = message.message_thread_id
+        # Автоматически определяем отдел на основе thread_id
+        department_id = THREAD_TO_DEPARTMENT_MAPPING.get(thread_id)
+        if department_id:
+            logger.info(f"Автоматически определен отдел {department_id} для thread_id {thread_id}")
+    
     # Определяем Bitrix ID постановщика
     creator_bitrix_id = TELEGRAM_TO_BITRIX_MAPPING.get(creator_telegram_id)
     if not creator_bitrix_id:
@@ -850,6 +1030,8 @@ async def handle_reply_with_mention(update: Update, context: ContextTypes.DEFAUL
         "responsible_telegram_id": responsible_telegram_id,
         "chat_id": message.chat_id,  # Сохраняем chat_id для отправки ответа
         "message_id": message.message_id,  # Сохраняем message_id для ответа
+        "thread_id": thread_id,  # Сохраняем thread_id для определения отдела
+        "department_id": department_id,  # Сохраняем автоматически определенный отдел
         "timestamp": datetime.now().isoformat()
     }
     
@@ -1126,6 +1308,7 @@ def main():
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("link", link_user))
     application.add_handler(CommandHandler("link_username", link_username))
+    application.add_handler(CommandHandler("departments", departments_command))
     
     # Обработчик для reply-сообщений с упоминанием бота
     # Регистрируем ПЕРЕД ConversationHandler, чтобы он имел приоритет
@@ -1298,7 +1481,9 @@ def main():
                                 'responsible_bitrix_id': session_data.get('responsible_bitrix_id'),
                                 'original_message_text': session_data.get('original_message_text', ''),
                                 'creator_name': session_data.get('creator_name', ''),
-                                'responsible_name': session_data.get('responsible_name', '')
+                                'responsible_name': session_data.get('responsible_name', ''),
+                                'department_id': session_data.get('department_id'),
+                                'thread_id': session_data.get('thread_id')
                             })
                         
                         # Если токен не указан, определяем пользователя из Telegram WebApp API
@@ -1365,7 +1550,9 @@ def main():
                                 'responsible_bitrix_id': None,
                                 'original_message_text': '',
                                 'creator_name': creator_name,
-                                'responsible_name': ''
+                                'responsible_name': '',
+                                'department_id': None,
+                                'thread_id': None
                             })
                             
                         except (json.JSONDecodeError, KeyError, ValueError) as e:
@@ -1401,6 +1588,31 @@ def main():
                         logger.error(f"Ошибка при получении списка пользователей: {e}", exc_info=True)
                         return web.json_response({'error': 'Ошибка загрузки пользователей'}, status=500)
                 
+                # API: Получение списка подразделений
+                async def miniapp_departments_handler(request):
+                    try:
+                        # Получаем все подразделения из Bitrix24
+                        departments = bitrix_client.get_all_departments()
+                        
+                        # Форматируем список подразделений
+                        departments_list = []
+                        for dept in departments:
+                            name = dept.get('NAME', '').strip()
+                            # Пропускаем подразделения без имени
+                            if name:
+                                departments_list.append({
+                                    'id': int(dept.get('ID')),
+                                    'name': name
+                                })
+                        
+                        # Сортируем по имени для удобства
+                        departments_list.sort(key=lambda x: x['name'])
+                        
+                        return web.json_response(departments_list)
+                    except Exception as e:
+                        logger.error(f"Ошибка при получении списка подразделений: {e}", exc_info=True)
+                        return web.json_response({'error': 'Ошибка загрузки подразделений'}, status=500)
+                
                 # API: Создание задачи из Mini App
                 async def miniapp_create_task_handler(request):
                     try:
@@ -1422,6 +1634,7 @@ def main():
                         responsible_id = data.get('responsible_id')
                         deadline = data.get('deadline')
                         description = data.get('description', '').strip()
+                        department_id = data.get('department_id')  # Может быть None
                         
                         if not title:
                             return web.json_response({'error': 'Название задачи обязательно'}, status=400)
@@ -1437,7 +1650,8 @@ def main():
                             creator_id=creator_id,
                             description=description,
                             deadline=deadline,
-                            file_ids=None
+                            file_ids=None,
+                            department_id=department_id
                         )
                         
                         if result.get("result") and result["result"].get("task"):
@@ -1513,6 +1727,7 @@ def main():
                 aio_app.router.add_get('/api/miniapp/session', miniapp_session_handler)
                 aio_app.router.add_post('/api/miniapp/session', miniapp_session_handler)  # Поддержка POST для initData
                 aio_app.router.add_get('/api/miniapp/users', miniapp_users_handler)
+                aio_app.router.add_get('/api/miniapp/departments', miniapp_departments_handler)
                 aio_app.router.add_post('/api/miniapp/create-task', miniapp_create_task_handler)
                 
                 # Инициализируем приложение

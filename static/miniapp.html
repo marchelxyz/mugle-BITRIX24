@@ -302,6 +302,17 @@
             </div>
             
             <div class="form-group">
+                <label>Подразделение (опционально)</label>
+                <div class="user-select">
+                    <select id="departmentSelect">
+                        <option value="">Не выбрано</option>
+                    </select>
+                    <button type="button" class="btn-change" onclick="loadDepartments()">Обновить</button>
+                </div>
+                <input type="hidden" id="departmentId">
+            </div>
+            
+            <div class="form-group">
                 <label>Срок выполнения</label>
                 <input type="datetime-local" id="deadline">
             </div>
@@ -399,6 +410,7 @@
         
         let sessionData = null;
         let usersList = [];
+        let departmentsList = [];
         
         // Получаем базовый URL для API запросов
         function getApiUrl(path) {
@@ -467,10 +479,23 @@
                     document.getElementById('responsibleId').value = '';
                 }
                 
+                // Устанавливаем отдел, если он был автоматически определен
+                if (data.department_id) {
+                    document.getElementById('departmentId').value = data.department_id;
+                    // Загружаем список подразделений для отображения названия
+                    await loadDepartments();
+                    // Устанавливаем выбранное значение в select
+                    const departmentSelect = document.getElementById('departmentSelect');
+                    departmentSelect.value = data.department_id;
+                }
+                
                 document.getElementById('originalMessage').textContent = data.original_message_text || '(нет текста)';
                 
                 // Загружаем список пользователей для выбора
                 await loadUsers();
+                
+                // Загружаем список подразделений
+                await loadDepartments();
                 
                 // Скрываем индикатор загрузки и показываем форму
                 document.getElementById('loading').classList.remove('show');
@@ -492,6 +517,43 @@
                 }
             } catch (error) {
                 console.error('Ошибка загрузки пользователей:', error);
+            }
+        }
+        
+        // Загружаем список подразделений
+        async function loadDepartments() {
+            try {
+                const response = await fetch(getApiUrl('/api/miniapp/departments'));
+                if (response.ok) {
+                    departmentsList = await response.json();
+                    const departmentSelect = document.getElementById('departmentSelect');
+                    
+                    // Сохраняем текущее выбранное значение
+                    const currentValue = departmentSelect.value;
+                    
+                    // Очищаем список (кроме первого элемента "Не выбрано")
+                    departmentSelect.innerHTML = '<option value="">Не выбрано</option>';
+                    
+                    // Добавляем подразделения
+                    departmentsList.forEach(dept => {
+                        const option = document.createElement('option');
+                        option.value = dept.id;
+                        option.textContent = dept.name;
+                        departmentSelect.appendChild(option);
+                    });
+                    
+                    // Восстанавливаем выбранное значение, если оно было
+                    if (currentValue) {
+                        departmentSelect.value = currentValue;
+                    }
+                    
+                    // Обновляем скрытое поле при изменении select
+                    departmentSelect.addEventListener('change', function() {
+                        document.getElementById('departmentId').value = this.value || '';
+                    });
+                }
+            } catch (error) {
+                console.error('Ошибка загрузки подразделений:', error);
             }
         }
         
@@ -623,6 +685,8 @@
                 return;
             }
             
+            const departmentId = document.getElementById('departmentId').value;
+            
             const formData = {
                 token: token,
                 title: document.getElementById('taskTitle').value,
@@ -630,7 +694,8 @@
                 responsible_id: parseInt(responsibleId),
                 deadline: document.getElementById('deadline').value,
                 description: document.getElementById('description').value,
-                original_message_text: sessionData.original_message_text
+                original_message_text: sessionData.original_message_text,
+                department_id: departmentId ? parseInt(departmentId) : null
             };
             
             // Форматируем deadline если указан
