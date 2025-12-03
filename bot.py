@@ -601,23 +601,45 @@ async def handle_reply_with_mention(update: Update, context: ContextTypes.DEFAUL
     reply_to = message.reply_to_message
     bot_username = context.bot.username
     
+    if not bot_username:
+        logger.warning("Bot username не установлен")
+        return
+    
     # Проверяем, что в сообщении есть упоминание бота
-    text = message.text or ""
+    text = message.text or message.caption or ""
     text_lower = text.lower()
     bot_username_lower = bot_username.lower()
     
-    # Проверяем упоминание через @username или просто username
-    has_mention = (
-        f"@{bot_username_lower}" in text_lower or
-        bot_username_lower in text_lower or
-        (message.entities and any(
-            entity.type == "mention" and 
-            text[entity.offset:entity.offset + entity.length].lower() == f"@{bot_username_lower}"
-            for entity in message.entities
-        ))
-    )
+    # Проверяем упоминание через @username в тексте
+    has_mention_in_text = f"@{bot_username_lower}" in text_lower
+    
+    # Проверяем упоминание через entities (более надежный способ)
+    has_mention_in_entities = False
+    entities = message.entities or message.caption_entities or []
+    for entity in entities:
+        if entity.type == "mention":
+            mention_text = text[entity.offset:entity.offset + entity.length].lower()
+            if mention_text == f"@{bot_username_lower}":
+                has_mention_in_entities = True
+                break
+    
+    # Также проверяем, упоминается ли бот через text_mention (для reply-сообщений)
+    has_bot_mention = False
+    for entity in entities:
+        if entity.type == "text_mention" and entity.user:
+            if entity.user.id == context.bot.id:
+                has_bot_mention = True
+                break
+    
+    # Проверяем упоминание через @username или просто username в тексте
+    has_mention = has_mention_in_text or has_mention_in_entities or has_bot_mention
+    
+    logger.info(f"Проверка упоминания бота: текст='{text}', has_mention_in_text={has_mention_in_text}, "
+                f"has_mention_in_entities={has_mention_in_entities}, has_bot_mention={has_bot_mention}, "
+                f"bot_username={bot_username}, entities_count={len(entities)}")
     
     if not has_mention:
+        logger.debug("Упоминание бота не найдено в reply-сообщении")
         return
     
     # Получаем Telegram ID пользователя, который ответил (постановщик)
@@ -653,19 +675,19 @@ async def handle_reply_with_mention(update: Update, context: ContextTypes.DEFAUL
         )
         return
     
-    if not responsible_bitrix_id:
-        # Если исполнитель не найден, все равно предлагаем создать задачу
-        # Пользователь сможет выбрать исполнителя в Mini App
-        responsible_bitrix_id = None
-        responsible_name = f"@{reply_to.from_user.username}" if reply_to.from_user.username else f"ID: {responsible_telegram_id}"
-        logger.warning(f"Исполнитель {responsible_telegram_id} не найден в Bitrix24, будет предложено выбрать в Mini App")
-    
     # Получаем информацию о пользователях для отображения
     creator_info = bitrix_client.get_user_by_id(creator_bitrix_id)
-    responsible_info = bitrix_client.get_user_by_id(responsible_bitrix_id)
-    
     creator_name = f"{creator_info.get('NAME', '')} {creator_info.get('LAST_NAME', '')}".strip() if creator_info else f"ID: {creator_bitrix_id}"
-    responsible_name = f"{responsible_info.get('NAME', '')} {responsible_info.get('LAST_NAME', '')}".strip() if responsible_info else f"ID: {responsible_bitrix_id}"
+    
+    # Определяем имя исполнителя
+    if not responsible_bitrix_id:
+        # Если исполнитель не найден, используем имя из Telegram
+        responsible_name = f"@{reply_to.from_user.username}" if reply_to.from_user.username else f"ID: {responsible_telegram_id}"
+        logger.warning(f"Исполнитель {responsible_telegram_id} не найден в Bitrix24, будет предложено выбрать в Mini App")
+    else:
+        # Если исполнитель найден, получаем его имя из Bitrix24
+        responsible_info = bitrix_client.get_user_by_id(responsible_bitrix_id)
+        responsible_name = f"{responsible_info.get('NAME', '')} {responsible_info.get('LAST_NAME', '')}".strip() if responsible_info else f"ID: {responsible_bitrix_id}"
     
     # Формируем данные для Mini App
     webhook_url = os.getenv("WEBHOOK_URL") or os.getenv("RAILWAY_PUBLIC_DOMAIN")
@@ -692,6 +714,8 @@ async def handle_reply_with_mention(update: Update, context: ContextTypes.DEFAUL
         "responsible_name": responsible_name,
         "creator_telegram_id": creator_telegram_id,
         "responsible_telegram_id": responsible_telegram_id,
+        "chat_id": message.chat_id,  # Сохраняем chat_id для отправки ответа
+        "message_id": message.message_id,  # Сохраняем message_id для ответа
         "timestamp": datetime.now().isoformat()
     }
     
@@ -716,7 +740,9 @@ async def handle_reply_with_mention(update: Update, context: ContextTypes.DEFAUL
     
     message_text += "Нажмите кнопку ниже, чтобы открыть форму создания задачи:"
     
+    logger.info(f"Отправка сообщения с кнопкой создания задачи в чат {message.chat_id}")
     await message.reply_text(message_text, reply_markup=keyboard)
+    logger.info("Сообщение с кнопкой успешно отправлено")
 
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -794,20 +820,26 @@ def main():
     )
     
     # Регистрируем обработчики
+    # ВАЖНО: Обработчик reply-сообщений должен быть зарегистрирован ДО ConversationHandler,
+    # чтобы он мог перехватить сообщения раньше
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("link", link_user))
     application.add_handler(CommandHandler("link_username", link_username))
-    application.add_handler(task_creation_handler)
     
     # Обработчик для reply-сообщений с упоминанием бота
-    # Используем более простой фильтр - проверяем reply и наличие текста
+    # Регистрируем ПЕРЕД ConversationHandler, чтобы он имел приоритет
+    # Фильтр проверяет наличие reply и текста (или caption для медиа)
+    # Проверка упоминания бота выполняется внутри функции
     application.add_handler(
         MessageHandler(
-            filters.TEXT & filters.REPLY,
+            filters.REPLY & (filters.TEXT | filters.Caption),
             handle_reply_with_mention
         )
     )
+    
+    # ConversationHandler для стандартного диалога создания задачи
+    application.add_handler(task_creation_handler)
     
     # Проверяем, используется ли webhook (для Railway/продакшена)
     port = int(os.getenv("PORT", 0))
@@ -1017,12 +1049,53 @@ def main():
                         if result.get("result") and result["result"].get("task"):
                             task_id = result["result"]["task"]["id"]
                             
+                            # Получаем ссылку на задачу
+                            task_url = bitrix_client.get_task_url(task_id, creator_id)
+                            
+                            # Получаем информацию о задаче для сообщения
+                            responsible_info = bitrix_client.get_user_by_id(responsible_id)
+                            responsible_name = ""
+                            if responsible_info:
+                                responsible_name = f"{responsible_info.get('NAME', '')} {responsible_info.get('LAST_NAME', '')}".strip()
+                            
+                            # Формируем текст сообщения
+                            response_text = (
+                                f"✅ Задача создана!\n\n"
+                                f"📋 Задача: {title}\n"
+                            )
+                            
+                            if responsible_name:
+                                response_text += f"👤 Ответственный: {responsible_name}\n"
+                            
+                            if deadline:
+                                response_text += f"📅 Срок: {deadline}\n"
+                            
+                            if description:
+                                response_text += f"📝 Описание: {description[:100]}...\n" if len(description) > 100 else f"📝 Описание: {description}\n"
+                            
+                            response_text += f"🆔 ID задачи: {task_id}\n\n"
+                            response_text += f"🔗 Ссылка на задачу: {task_url}"
+                            
+                            # Отправляем сообщение в чат с ссылкой на задачу
+                            chat_id = session_data.get('chat_id')
+                            message_id = session_data.get('message_id')
+                            
+                            if chat_id:
+                                try:
+                                    # Отправляем сообщение в чат
+                                    await application.bot.send_message(
+                                        chat_id=chat_id,
+                                        text=response_text,
+                                        reply_to_message_id=message_id
+                                    )
+                                    logger.info(f"Сообщение с ссылкой на задачу отправлено в чат {chat_id}")
+                                except Exception as send_error:
+                                    logger.error(f"Ошибка при отправке сообщения в чат: {send_error}", exc_info=True)
+                                    # Продолжаем работу, даже если не удалось отправить сообщение
+                            
                             # Удаляем сессию после успешного создания
                             if session_key in application.bot_data:
                                 del application.bot_data[session_key]
-                            
-                            # Получаем ссылку на задачу
-                            task_url = bitrix_client.get_task_url(task_id, creator_id)
                             
                             return web.json_response({
                                 'success': True,
