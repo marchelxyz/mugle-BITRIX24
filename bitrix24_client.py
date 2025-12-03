@@ -29,13 +29,14 @@ class Bitrix24Client:
         self.webhook_token = webhook_token
         self.base_url = f"https://{self.domain}/rest/{webhook_token}"
     
-    def _make_request(self, method: str, params: Dict = None) -> Dict:
+    def _make_request(self, method: str, params: Dict = None, use_get: bool = False) -> Dict:
         """
         Выполнение запроса к API Битрикс24
         
         Args:
             method: Метод API (например, tasks.task.add)
             params: Параметры запроса
+            use_get: Если True, использует GET запрос вместо POST
             
         Returns:
             Ответ от API
@@ -44,7 +45,14 @@ class Bitrix24Client:
             params = {}
         
         url = f"{self.base_url}/{method}"
-        response = requests.post(url, json=params)
+        
+        if use_get:
+            # Для GET запросов параметры передаются в URL
+            response = requests.get(url, params=params)
+        else:
+            # Для POST запросов параметры передаются в JSON body
+            response = requests.post(url, json=params)
+        
         response.raise_for_status()
         return response.json()
     
@@ -457,18 +465,68 @@ class Bitrix24Client:
             Список подразделений
         """
         try:
+            logger.debug(f"Запрос подразделений через URL: {self.base_url}/department.get")
+            
             # Используем метод department.get для получения всех подразделений
-            result = self._make_request("department.get", {})
+            # Пробуем сначала GET запрос (стандартный для Bitrix24 REST API)
+            try:
+                logger.debug("Попытка GET запроса к department.get...")
+                result = self._make_request("department.get", {}, use_get=True)
+                logger.debug(f"GET запрос успешен, результат: {result}")
+            except requests.exceptions.HTTPError as http_err:
+                # Если GET не работает (401 или другой код), пробуем POST
+                if http_err.response.status_code == 401:
+                    logger.warning("GET запрос к department.get вернул 401, пробуем POST...")
+                    try:
+                        result = self._make_request("department.get", {}, use_get=False)
+                        logger.debug(f"POST запрос успешен, результат: {result}")
+                    except requests.exceptions.HTTPError as post_err:
+                        logger.error(f"POST запрос также вернул ошибку {post_err.response.status_code}")
+                        raise post_err
+                else:
+                    raise
+            
             departments = result.get("result", [])
             
+            # Проверяем наличие ошибки в ответе
+            if "error" in result:
+                error_code = result.get("error", "UNKNOWN")
+                error_msg = result.get("error_description", result.get("error", "Неизвестная ошибка"))
+                logger.warning(f"Bitrix24 вернул ошибку при получении подразделений: {error_code} - {error_msg}")
+                logger.warning(f"Проверьте, что вебхук имеет права на чтение подразделений в Bitrix24")
+                return []
+            
             if isinstance(departments, list):
+                logger.info(f"Успешно получено {len(departments)} подразделений из Bitrix24")
                 return departments
             elif isinstance(departments, dict):
+                logger.info(f"Получено одно подразделение из Bitrix24")
                 return [departments]
             
+            logger.warning("Результат запроса подразделений не содержит данных")
+            return []
+        except requests.exceptions.HTTPError as http_err:
+            # Обрабатываем HTTP ошибки отдельно
+            status_code = http_err.response.status_code
+            try:
+                error_response = http_err.response.json()
+                error_code = error_response.get("error", "UNKNOWN")
+                error_description = error_response.get("error_description", "")
+                logger.error(f"HTTP ошибка {status_code} при получении подразделений: {error_code}")
+                if error_description:
+                    logger.error(f"Описание ошибки: {error_description}")
+            except:
+                logger.error(f"HTTP ошибка {status_code} при получении подразделений: {http_err}")
+            
+            if status_code == 401:
+                logger.error(f"Ошибка 401 Unauthorized при получении подразделений.")
+                logger.error(f"Проверьте:")
+                logger.error(f"  1. Правильность токена вебхука BITRIX24_WEBHOOK_TOKEN")
+                logger.error(f"  2. Права вебхука в Bitrix24 (должен иметь доступ к department.get)")
+                logger.error(f"  3. Не истек ли срок действия вебхука")
             return []
         except Exception as e:
-            logger.error(f"Ошибка при получении подразделений: {e}")
+            logger.error(f"Ошибка при получении подразделений: {e}", exc_info=True)
             return []
     
     def get_department_by_id(self, department_id: int) -> Optional[Dict]:
@@ -482,7 +540,20 @@ class Bitrix24Client:
             Информация о подразделении или None
         """
         try:
-            result = self._make_request("department.get", {"ID": department_id})
+            # Пробуем сначала GET запрос
+            try:
+                result = self._make_request("department.get", {"ID": department_id}, use_get=True)
+            except requests.exceptions.HTTPError as http_err:
+                # Если GET не работает, пробуем POST
+                if http_err.response.status_code == 401:
+                    result = self._make_request("department.get", {"ID": department_id}, use_get=False)
+                else:
+                    raise
+            
+            # Проверяем наличие ошибки в ответе
+            if "error" in result:
+                return None
+            
             departments = result.get("result", [])
             
             if departments:
@@ -490,6 +561,10 @@ class Bitrix24Client:
                     return departments[0]
                 elif isinstance(departments, dict):
                     return departments
-        except Exception:
-            pass
-        return None
+        except requests.exceptions.HTTPError as http_err:
+            if http_err.response.status_code == 401:
+                logger.warning(f"Ошибка 401 при получении подразделения {department_id}. Проверьте права вебхука.")
+            return None
+        except Exception as e:
+            logger.debug(f"Ошибка при получении подразделения {department_id}: {e}")
+            return None
