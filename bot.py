@@ -899,13 +899,18 @@ def main():
                 async def post_shutdown(aio_app):
                     logger.info("post_shutdown вызван - остановка Telegram приложения...")
                     try:
-                        # Проверяем, что приложение было инициализировано
-                        if application.initialized:
+                        # Проверяем, что приложение было запущено (безопасная проверка)
+                        try:
+                            is_running = application.running
+                        except (AttributeError, RuntimeError):
+                            is_running = False
+                        
+                        if is_running:
                             await application.stop()
                             await application.shutdown()
                             logger.info("Telegram приложение остановлено")
                         else:
-                            logger.info("Telegram приложение не было инициализировано, пропускаем остановку")
+                            logger.info("Telegram приложение не было запущено, пропускаем остановку")
                     except Exception as shutdown_error:
                         logger.error(f"Ошибка при остановке Telegram приложения: {shutdown_error}", exc_info=True)
                         # Не поднимаем исключение, чтобы сервер мог завершиться корректно
@@ -921,9 +926,16 @@ def main():
                 # Обработчик для webhook от Telegram
                 async def webhook_handler(request):
                     try:
-                        # Проверяем, что приложение инициализировано
-                        if not application.initialized:
-                            logger.warning("Webhook запрос получен до инициализации приложения")
+                        # Проверяем, что приложение запущено (безопасная проверка)
+                        try:
+                            is_running = application.running
+                        except (AttributeError, RuntimeError):
+                            # Если приложение еще не запущено, возвращаем 503
+                            logger.warning("Webhook запрос получен до запуска приложения")
+                            return web.Response(text='Initializing', status=503)
+                        
+                        if not is_running:
+                            logger.warning("Webhook запрос получен, но приложение не запущено")
                             return web.Response(text='Initializing', status=503)
                         
                         # Получаем данные от Telegram
