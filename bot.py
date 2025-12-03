@@ -72,6 +72,58 @@ except Exception as e:
     logger.error(f"Ошибка при загрузке связей из Bitrix24: {e}", exc_info=True)
     logger.warning("Бот будет работать, но связи нужно будет устанавливать заново")
 
+# Загружаем и логируем все подразделения из Bitrix24 при старте
+def log_all_departments():
+    """Функция для логирования всех подразделений из Bitrix24"""
+    try:
+        departments = bitrix_client.get_all_departments()
+        if departments:
+            # Сортируем по ID для удобства
+            try:
+                departments_sorted = sorted(departments, key=lambda x: int(x.get('ID', 0)))
+            except (ValueError, TypeError):
+                departments_sorted = departments
+            
+            logger.info("")
+            logger.info("=" * 70)
+            logger.info("📋 СПИСОК ПОДРАЗДЕЛЕНИЙ ИЗ BITRIX24:")
+            logger.info("=" * 70)
+            logger.info(f"{'ID':<10} | {'Название':<40} | {'Родитель':<10}")
+            logger.info("-" * 70)
+            
+            for dept in departments_sorted:
+                dept_id = str(dept.get('ID', 'N/A'))
+                dept_name = dept.get('NAME', 'Без названия')
+                dept_parent = dept.get('PARENT', '')
+                dept_parent_str = str(dept_parent) if dept_parent else '-'
+                
+                # Обрезаем длинные названия для читаемости
+                dept_name_display = dept_name[:40] if len(dept_name) <= 40 else dept_name[:37] + "..."
+                
+                logger.info(f"{dept_id:<10} | {dept_name_display:<40} | {dept_parent_str:<10}")
+            
+            logger.info("-" * 70)
+            logger.info(f"✅ Всего найдено подразделений: {len(departments)}")
+            logger.info("=" * 70)
+            logger.info("")
+            
+            # Также выводим формат для THREAD_DEPARTMENT_MAPPING
+            if THREAD_TO_DEPARTMENT_MAPPING:
+                logger.info("💡 Текущий маппинг thread_id -> department_id:")
+                for thread_id, dept_id in sorted(THREAD_TO_DEPARTMENT_MAPPING.items()):
+                    dept_info = next((d for d in departments if str(d.get('ID')) == str(dept_id)), None)
+                    dept_name = dept_info.get('NAME', 'Неизвестно') if dept_info else 'Неизвестно'
+                    logger.info(f"   Thread ID {thread_id} -> Department ID {dept_id} ({dept_name})")
+                logger.info("")
+        else:
+            logger.info("ℹ️ В Bitrix24 не найдено подразделений")
+    except Exception as e:
+        logger.error(f"Ошибка при загрузке подразделений из Bitrix24: {e}", exc_info=True)
+        logger.warning("Бот будет работать, но список подразделений недоступен")
+
+# Вызываем функцию логирования при старте
+log_all_departments()
+
 # Состояния диалога
 WAITING_FOR_RESPONSIBLES, WAITING_FOR_DEADLINE, WAITING_FOR_DESCRIPTION, WAITING_FOR_FILES = range(4)
 
@@ -346,6 +398,75 @@ async def create_task_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
 
 
+async def departments_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для получения списка всех подразделений из Bitrix24"""
+    try:
+        departments = bitrix_client.get_all_departments()
+        
+        if not departments:
+            await update.message.reply_text(
+                "ℹ️ В Bitrix24 не найдено подразделений"
+            )
+            return
+        
+        # Формируем список подразделений
+        dept_list = []
+        for dept in departments:
+            dept_id = dept.get('ID', 'N/A')
+            dept_name = dept.get('NAME', 'Без названия')
+            dept_list.append(f"ID: {dept_id} | {dept_name}")
+        
+        # Разбиваем на части, если список слишком длинный (Telegram ограничивает длину сообщения)
+        message_text = "📋 Список подразделений из Bitrix24:\n\n"
+        current_message = message_text
+        
+        for dept_line in dept_list:
+            if len(current_message + dept_line + "\n") > 4000:  # Лимит Telegram ~4096 символов
+                await update.message.reply_text(current_message)
+                current_message = ""
+            
+            current_message += dept_line + "\n"
+        
+        if current_message != message_text:
+            await update.message.reply_text(current_message)
+        
+        # Также логируем в консоль с красивым форматированием
+        logger.info("")
+        logger.info("=" * 70)
+        logger.info("📋 СПИСОК ПОДРАЗДЕЛЕНИЙ ИЗ BITRIX24 (по запросу команды /departments):")
+        logger.info("=" * 70)
+        logger.info(f"{'ID':<10} | {'Название':<40} | {'Родитель':<10}")
+        logger.info("-" * 70)
+        
+        # Сортируем по ID для удобства
+        try:
+            departments_sorted = sorted(departments, key=lambda x: int(x.get('ID', 0)))
+        except (ValueError, TypeError):
+            departments_sorted = departments
+        
+        for dept in departments_sorted:
+            dept_id = str(dept.get('ID', 'N/A'))
+            dept_name = dept.get('NAME', 'Без названия')
+            dept_parent = dept.get('PARENT', '')
+            dept_parent_str = str(dept_parent) if dept_parent else '-'
+            
+            # Обрезаем длинные названия для читаемости
+            dept_name_display = dept_name[:40] if len(dept_name) <= 40 else dept_name[:37] + "..."
+            
+            logger.info(f"{dept_id:<10} | {dept_name_display:<40} | {dept_parent_str:<10}")
+        
+        logger.info("-" * 70)
+        logger.info(f"✅ Всего найдено подразделений: {len(departments)}")
+        logger.info("=" * 70)
+        logger.info("")
+        
+    except Exception as e:
+        logger.error(f"Ошибка при получении списка подразделений: {e}", exc_info=True)
+        await update.message.reply_text(
+            f"❌ Ошибка при получении списка подразделений: {e}"
+        )
+
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /help"""
     await update.message.reply_text(
@@ -361,6 +482,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/link bitrix_id - Связать ваш Telegram аккаунт с ID пользователя Битрикс24\n"
         "  (Telegram ID будет сохранен в профиле пользователя в Bitrix24)\n"
         "/link_username @username bitrix_id - Связать Telegram username с пользователем Битрикс24\n"
+        "/departments - Показать список всех подразделений из Bitrix24\n"
         "/cancel - Отменить создание задачи\n\n"
         "💡 После команды /link бот автоматически определяет ваш аккаунт "
         "по Telegram ID из Bitrix24!"
@@ -1186,6 +1308,7 @@ def main():
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("link", link_user))
     application.add_handler(CommandHandler("link_username", link_username))
+    application.add_handler(CommandHandler("departments", departments_command))
     
     # Обработчик для reply-сообщений с упоминанием бота
     # Регистрируем ПЕРЕД ConversationHandler, чтобы он имел приоритет
