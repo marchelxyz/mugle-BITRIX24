@@ -163,7 +163,7 @@
     <div class="container">
         <h1>📋 Создание задачи</h1>
         
-        <div id="loading" class="loading">Загрузка...</div>
+        <div id="loading" class="loading show">Загрузка...</div>
         <div id="error" class="error"></div>
         
         <form id="taskForm" style="display: none;">
@@ -221,18 +221,21 @@
         tg.expand();
         
         // Получаем токен из URL
-        // Поддерживаем два формата:
+        // Поддерживаем несколько форматов:
         // 1. Прямой URL: /miniapp?token=xxx
-        // 2. Direct Link Mini App: параметр tgWebAppStartParam (передается через startapp)
+        // 2. Direct Link Mini App: параметр start_param через tg.initDataUnsafe.start_param
+        // 3. Через tgWebAppStartParam в URL
         const urlParams = new URLSearchParams(window.location.search);
         let token = urlParams.get('token');
         
-        // Если токен не найден в параметре token, проверяем tgWebAppStartParam
-        // Это параметр, который передается при использовании Direct Link Mini App формата
-        // https://t.me/botusername?startapp=token
+        // Если токен не найден в параметре token, проверяем через Telegram WebApp API
+        // Это работает для Direct Link Mini App формата: https://t.me/botusername?startapp=token
         if (!token) {
-            token = urlParams.get('tgWebAppStartParam');
-            // Также проверяем через initData от Telegram WebApp API
+            // Проверяем через initDataUnsafe (более надежный способ)
+            if (tg.initDataUnsafe && tg.initDataUnsafe.start_param) {
+                token = tg.initDataUnsafe.start_param;
+            }
+            // Также проверяем через initData (строка)
             if (!token && tg.initData) {
                 try {
                     const initDataParams = new URLSearchParams(tg.initData);
@@ -241,31 +244,50 @@
                     console.error('Ошибка парсинга initData:', e);
                 }
             }
+            // Fallback: проверяем URL параметр tgWebAppStartParam
+            if (!token) {
+                token = urlParams.get('tgWebAppStartParam');
+            }
         }
+        
+        console.log('Токен найден:', token ? 'Да' : 'Нет', token ? `(длина: ${token.length})` : '');
+        console.log('URL:', window.location.href);
+        console.log('initDataUnsafe:', tg.initDataUnsafe);
         
         let sessionData = null;
         let usersList = [];
         
-        // Проверяем наличие токена
-        if (!token) {
-            showError('Токен сессии не найден. Пожалуйста, используйте кнопку из сообщения бота.');
-            document.getElementById('loading').classList.remove('show');
-            return;
+        // Получаем базовый URL для API запросов
+        function getApiUrl(path) {
+            // Если путь начинается с /, используем относительный путь от текущего домена
+            // Это работает и для прямого URL, и для Direct Link Mini App
+            const baseUrl = window.location.origin;
+            return `${baseUrl}${path}`;
         }
         
         // Загружаем данные сессии
         async function loadSession() {
+            // Проверяем наличие токена
+            if (!token) {
+                showError('Токен сессии не найден. Пожалуйста, используйте кнопку из сообщения бота.');
+                document.getElementById('loading').classList.remove('show');
+                return;
+            }
+            
+            // Показываем индикатор загрузки
+            document.getElementById('loading').classList.add('show');
             try {
-                const response = await fetch(`/api/miniapp/session?token=${token}`);
+                const response = await fetch(getApiUrl(`/api/miniapp/session?token=${token}`));
                 if (!response.ok) {
                     throw new Error('Не удалось загрузить данные сессии');
                 }
                 const data = await response.json();
+                console.log('Данные сессии загружены:', data);
                 sessionData = data;
                 
                 // Заполняем форму
-                document.getElementById('creatorName').value = data.creator_name;
-                document.getElementById('creatorId').value = data.creator_bitrix_id;
+                document.getElementById('creatorName').value = data.creator_name || '';
+                document.getElementById('creatorId').value = data.creator_bitrix_id || '';
                 
                 // Исполнитель может быть не указан
                 if (data.responsible_bitrix_id) {
@@ -281,17 +303,21 @@
                 // Загружаем список пользователей для выбора
                 await loadUsers();
                 
+                // Скрываем индикатор загрузки и показываем форму
                 document.getElementById('loading').classList.remove('show');
                 document.getElementById('taskForm').style.display = 'block';
+                console.log('Форма отображена');
             } catch (error) {
-                showError(error.message);
+                console.error('Ошибка загрузки сессии:', error);
+                document.getElementById('loading').classList.remove('show');
+                showError('Ошибка загрузки данных: ' + (error.message || 'Неизвестная ошибка'));
             }
         }
         
         // Загружаем список пользователей
         async function loadUsers() {
             try {
-                const response = await fetch('/api/miniapp/users');
+                const response = await fetch(getApiUrl('/api/miniapp/users'));
                 if (response.ok) {
                     usersList = await response.json();
                 }
@@ -407,7 +433,7 @@
             }
             
             try {
-                const response = await fetch('/api/miniapp/create-task', {
+                const response = await fetch(getApiUrl('/api/miniapp/create-task'), {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
