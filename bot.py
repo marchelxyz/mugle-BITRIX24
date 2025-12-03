@@ -1281,19 +1281,22 @@ def main():
                 # API: Получение списка пользователей
                 async def miniapp_users_handler(request):
                     try:
-                        # Получаем всех пользователей из Bitrix24
-                        # Для упрощения используем поиск по пустой строке или ограниченный список
-                        users = bitrix_client.search_users("")
+                        # Получаем всех активных пользователей из Bitrix24
+                        users = bitrix_client.get_all_users(active_only=True)
                         
                         # Форматируем список пользователей
                         users_list = []
-                        for user in users[:100]:  # Ограничиваем до 100 пользователей
+                        for user in users:
                             name = f"{user.get('NAME', '')} {user.get('LAST_NAME', '')}".strip()
+                            # Пропускаем пользователей без имени
                             if name:
                                 users_list.append({
                                     'id': int(user.get('ID')),
                                     'name': name
                                 })
+                        
+                        # Сортируем по имени для удобства
+                        users_list.sort(key=lambda x: x['name'])
                         
                         return web.json_response(users_list)
                     except Exception as e:

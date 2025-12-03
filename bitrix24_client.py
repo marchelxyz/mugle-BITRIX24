@@ -3,7 +3,10 @@
 """
 import requests
 import os
+import logging
 from typing import Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 class Bitrix24Client:
@@ -154,6 +157,45 @@ class Bitrix24Client:
             return result.get("result", [])
         except Exception:
             return []
+    
+    def get_all_users(self, active_only: bool = True) -> List[Dict]:
+        """
+        Получение всех пользователей Битрикс24
+        
+        Args:
+            active_only: Если True, возвращает только активных пользователей
+            
+        Returns:
+            Список всех пользователей
+        """
+        try:
+            # В Битрикс24 REST API метод user.get возвращает всех пользователей
+            # Используем фильтр для активных пользователей, если нужно
+            params = {}
+            if active_only:
+                params["FILTER"] = {"ACTIVE": "Y"}
+            
+            # Получаем всех пользователей одним запросом
+            # Битрикс24 обычно возвращает всех пользователей сразу
+            result = self._make_request("user.get", params)
+            users = result.get("result", [])
+            
+            # Если результат - список, возвращаем его
+            if isinstance(users, list):
+                return users
+            
+            # Если результат - словарь с одним пользователем, оборачиваем в список
+            if isinstance(users, dict):
+                return [users]
+            
+            return []
+        except Exception as e:
+            logger.error(f"Ошибка при получении всех пользователей: {e}")
+            # Fallback: используем поиск по пустой строке
+            try:
+                return self.search_users("")
+            except Exception:
+                return []
     
     def get_user_id_by_telegram_username(self, telegram_username: str) -> Optional[int]:
         """
