@@ -745,9 +745,7 @@ async def handle_reply_with_mention(update: Update, context: ContextTypes.DEFAUL
     direct_link_url = f"https://t.me/{bot_username}?startapp={session_token}"
     
     # Также формируем прямой URL для Mini App (используется для приватных чатов и как fallback)
-    # Явно указываем compact режим через параметр в URL (compact=1)
-    # Это гарантирует, что Mini App откроется в компактном режиме, а не в полноэкранном
-    query_params = urlencode({"token": session_token, "compact": "1"})
+    query_params = urlencode({"token": session_token})
     web_app_url = f"{webhook_url}/miniapp?{query_params}"
     
     # Логируем URL для отладки

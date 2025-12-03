@@ -342,55 +342,34 @@
         const tg = window.Telegram.WebApp;
         tg.ready();
         
-        // Явно устанавливаем компактный режим
+        // Устанавливаем компактный режим явно
         // Согласно документации: https://core.telegram.org/bots/webapps
-        // Для явного указания compact режима:
-        // 1. НЕ вызываем tg.expand() - это сохраняет компактный режим
-        // 2. Устанавливаем header color для правильного отображения
-        // 3. Используем viewportStableHeight для стабильной высоты
-        
-        // Устанавливаем цвет заголовка (опционально, но помогает в compact режиме)
-        if (typeof tg.setHeaderColor !== 'undefined') {
-            tg.setHeaderColor('#3390ec'); // Цвет кнопки Telegram по умолчанию
-        }
+        // По умолчанию Mini App открывается в компактном режиме,
+        // но мы явно устанавливаем его для гарантии
+        // Не вызываем tg.expand() - это сохраняет компактный режим
         
         // Устанавливаем стабильную высоту viewport для компактного режима
         // Это помогает Telegram правильно определить размер окна в компактном режиме
+        // В компактном режиме высота viewport ограничена, и мы устанавливаем её явно
         if (typeof tg.viewportStableHeight !== 'undefined') {
             // Используем текущую высоту viewport как стабильную для компактного режима
             tg.viewportStableHeight = window.innerHeight;
         }
         
-        // ВАЖНО: НЕ вызываем tg.expand() - это сохраняет компактный режим
-        // Если приложение открылось в полноэкранном режиме (что не должно происходить),
-        // можно принудительно закрыть полноэкранный режим через tg.close() и переоткрыть
-        // Но обычно это не требуется, так как по умолчанию используется compact режим
-        
-        // Если compact режим явно указан в URL, убеждаемся что мы в compact режиме
-        if (compactMode && tg.isExpanded) {
-            console.warn('Приложение открылось в полноэкранном режиме, но требуется compact режим');
-            // Не вызываем tg.close() автоматически, так как это закроет приложение
-            // Вместо этого просто логируем предупреждение
-        }
+        // Убеждаемся, что приложение остается в компактном режиме
+        // В компактном режиме приложение открывается в нижней части экрана
+        // и не занимает весь экран (в отличие от полноэкранного режима через tg.expand())
         
         console.log('Mini App режим:', tg.isExpanded ? 'полноэкранный' : 'компактный');
         console.log('Viewport высота:', window.innerHeight);
-        console.log('Viewport стабильная высота:', tg.viewportStableHeight);
-        console.log('Compact режим из URL:', compactMode);
         
         // Получаем токен из URL
         // Поддерживаем несколько форматов:
-        // 1. Прямой URL: /miniapp?token=xxx&compact=1
+        // 1. Прямой URL: /miniapp?token=xxx
         // 2. Direct Link Mini App: параметр start_param через tg.initDataUnsafe.start_param
         // 3. Через tgWebAppStartParam в URL
         const urlParams = new URLSearchParams(window.location.search);
         let token = urlParams.get('token');
-        
-        // Проверяем явный параметр compact режима из URL
-        const compactMode = urlParams.get('compact') === '1';
-        if (compactMode) {
-            console.log('Compact режим явно указан в URL');
-        }
         
         // Если токен не найден в параметре token, проверяем через Telegram WebApp API
         // Это работает для Direct Link Mini App формата: https://t.me/botusername?startapp=token
