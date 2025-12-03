@@ -838,7 +838,10 @@ def main():
                 aio_app = web.Application()
                 
                 # Инициализируем Telegram приложение при старте aiohttp
+                # Делаем это в фоне, чтобы сервер мог отвечать на health check сразу
                 async def post_init(aio_app):
+                    # Небольшая задержка, чтобы сервер успел запуститься и отвечать на health check
+                    await asyncio.sleep(1)
                     try:
                         logger.info("Инициализация Telegram приложения...")
                         await application.initialize()
@@ -864,20 +867,33 @@ def main():
                 async def post_shutdown(aio_app):
                     logger.info("post_shutdown вызван - остановка Telegram приложения...")
                     try:
-                        await application.stop()
-                        await application.shutdown()
-                        logger.info("Telegram приложение остановлено")
+                        # Проверяем, что приложение было инициализировано
+                        if application.initialized:
+                            await application.stop()
+                            await application.shutdown()
+                            logger.info("Telegram приложение остановлено")
+                        else:
+                            logger.info("Telegram приложение не было инициализировано, пропускаем остановку")
                     except Exception as shutdown_error:
                         logger.error(f"Ошибка при остановке Telegram приложения: {shutdown_error}", exc_info=True)
+                        # Не поднимаем исключение, чтобы сервер мог завершиться корректно
                 
-                # Обработчик для health check
+                # Обработчик для health check - должен отвечать быстро и без логирования
+                # Этот endpoint должен быть доступен сразу после запуска сервера
                 async def health_check(request):
-                    logger.info(f"Health check запрос: {request.path} от {request.remote}")
-                    return web.Response(text='OK', status=200)
+                    # Не логируем health check запросы, чтобы не засорять логи
+                    # Railway отправляет их очень часто (каждые несколько секунд)
+                    # Важно: отвечаем быстро, даже если Telegram приложение еще не инициализировано
+                    return web.Response(text='OK', status=200, headers={'Content-Type': 'text/plain'})
                 
                 # Обработчик для webhook от Telegram
                 async def webhook_handler(request):
                     try:
+                        # Проверяем, что приложение инициализировано
+                        if not application.initialized:
+                            logger.warning("Webhook запрос получен до инициализации приложения")
+                            return web.Response(text='Initializing', status=503)
+                        
                         # Получаем данные от Telegram
                         data = await request.json()
                         update = Update.de_json(data, application.bot)
@@ -889,7 +905,9 @@ def main():
                         return web.Response(text='OK')
                     except Exception as e:
                         logger.error(f"Ошибка при обработке webhook: {e}", exc_info=True)
-                        return web.Response(text='Error', status=500)
+                        # Возвращаем 200, чтобы Telegram не повторял запрос
+                        # Лучше обработать ошибку, чем получать повторные запросы
+                        return web.Response(text='OK', status=200)
                 
                 # Обработчик для Mini App HTML
                 async def miniapp_handler(request):
@@ -1020,6 +1038,7 @@ def main():
                         return web.json_response({'error': 'Внутренняя ошибка сервера'}, status=500)
                 
                 # Регистрируем маршруты
+                # ВАЖНО: health check должен быть зарегистрирован первым и отвечать сразу
                 aio_app.router.add_get('/', health_check)
                 aio_app.router.add_get('/health', health_check)
                 aio_app.router.add_post(f'/{token}', webhook_handler)
@@ -1029,6 +1048,7 @@ def main():
                 aio_app.router.add_post('/api/miniapp/create-task', miniapp_create_task_handler)
                 
                 # Инициализируем приложение
+                # Используем on_startup для инициализации Telegram в фоне
                 aio_app.on_startup.append(post_init)
                 aio_app.on_cleanup.append(post_shutdown)
                 
@@ -1046,6 +1066,8 @@ def main():
                         site = web.TCPSite(runner, '0.0.0.0', port)
                         await site.start()
                         logger.info(f"Сервер успешно запущен на 0.0.0.0:{port}")
+                        logger.info("Health check endpoint доступен на / и /health")
+                        logger.info("Сервер готов принимать запросы (Telegram приложение инициализируется в фоне)")
                         
                         # Ждем бесконечно - сервер будет работать до получения сигнала остановки
                         # Используем простой бесконечный цикл с периодическими проверками
@@ -1078,6 +1100,7 @@ def main():
                         # Ждем сигнала остановки или работаем бесконечно
                         logger.info("Сервер работает. Ожидание сигнала остановки...")
                         logger.info("Сервер готов принимать запросы на порту %d", port)
+                        logger.info("Health check доступен на / и /health - Railway может проверять статус")
                         try:
                             # Используем бесконечное ожидание с периодическими логами для диагностики
                             check_count = 0
@@ -1086,32 +1109,50 @@ def main():
                                 check_count += 1
                                 if check_count % 5 == 0:  # Каждые 5 минут
                                     logger.info(f"Сервер работает нормально (проверка #{check_count})")
+                        except (asyncio.CancelledError, KeyboardInterrupt):
+                            logger.info("Получен сигнал отмены (CancelledError/KeyboardInterrupt)")
+                            shutdown_event.set()
                         except Exception as wait_error:
                             logger.error(f"Ошибка при ожидании сигнала: {wait_error}", exc_info=True)
                             # Fallback: бесконечное ожидание с периодическими проверками
                             logger.info("Переход на бесконечное ожидание...")
                             while not shutdown_event.is_set():
-                                await asyncio.sleep(60)  # Проверяем каждую минуту
-                    except (KeyboardInterrupt, SystemExit):
-                        logger.info("Получен сигнал остановки (KeyboardInterrupt/SystemExit)")
+                                try:
+                                    await asyncio.sleep(60)  # Проверяем каждую минуту
+                                except (asyncio.CancelledError, KeyboardInterrupt):
+                                    logger.info("Получен сигнал отмены в fallback цикле")
+                                    shutdown_event.set()
+                                    break
+                    except (KeyboardInterrupt, SystemExit, asyncio.CancelledError):
+                        logger.info("Получен сигнал остановки (KeyboardInterrupt/SystemExit/CancelledError)")
+                        shutdown_event.set()
                     except Exception as e:
                         logger.error(f"Критическая ошибка при работе сервера: {e}", exc_info=True)
-                        raise
+                        # Не поднимаем исключение, чтобы сервер продолжал работать
+                        # Railway может перезапустить контейнер, если нужно
+                        logger.warning("Сервер продолжит работу после ошибки")
                     finally:
                         if runner:
                             logger.info("Остановка сервера...")
                             try:
                                 await runner.cleanup()
+                                logger.info("Runner успешно очищен")
                             except Exception as cleanup_error:
                                 logger.error(f"Ошибка при очистке runner: {cleanup_error}")
                 
                 # Запускаем event loop
                 try:
+                    logger.info("Запуск основного event loop...")
                     asyncio.run(run())
+                    logger.info("Event loop завершен")
                 except KeyboardInterrupt:
                     logger.info("Получен KeyboardInterrupt на верхнем уровне")
+                except SystemExit:
+                    logger.info("Получен SystemExit на верхнем уровне")
                 except Exception as run_error:
                     logger.error(f"Ошибка при запуске сервера: {run_error}", exc_info=True)
+                    # Не поднимаем исключение, чтобы Railway мог перезапустить контейнер
+                    logger.error("Сервер завершился с ошибкой. Railway перезапустит контейнер.")
                     raise
                 
             except KeyboardInterrupt:
