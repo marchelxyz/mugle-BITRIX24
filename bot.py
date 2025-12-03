@@ -12,7 +12,7 @@ from typing import Dict, Optional, List
 from urllib.parse import urlencode
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from dotenv import load_dotenv
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo, MenuButtonWebApp
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo, MenuButtonWebApp, BotCommand
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -175,12 +175,115 @@ def find_bitrix_user_by_name(name: str) -> Optional[int]:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /start"""
+    # Проверяем, есть ли параметр startapp (для открытия Mini App из меню прикрепления)
+    if context.args and len(context.args) > 0:
+        start_param = context.args[0]
+        # Если это токен для Mini App (начинается с определенного префикса или имеет формат токена)
+        if len(start_param) > 20:  # Предполагаем, что токены длинные
+            # Открываем Mini App через кнопку
+            webhook_url = os.getenv("WEBHOOK_URL") or os.getenv("RAILWAY_PUBLIC_DOMAIN")
+            if webhook_url and not webhook_url.startswith("http"):
+                webhook_url = f"https://{webhook_url}"
+            
+            if webhook_url:
+                if webhook_url.endswith("/"):
+                    webhook_url = webhook_url.rstrip("/")
+                
+                query_params = urlencode({"token": start_param})
+                web_app_url = f"{webhook_url}/miniapp?{query_params}"
+                web_app_info = WebAppInfo(url=web_app_url)
+                
+                button = InlineKeyboardButton(
+                    "📋 Открыть форму создания задачи",
+                    web_app=web_app_info
+                )
+                keyboard = InlineKeyboardMarkup([[button]])
+                
+                await update.message.reply_text(
+                    "📋 Откройте форму для создания задачи:",
+                    reply_markup=keyboard
+                )
+                return
+    
     await update.message.reply_text(
         "Привет! Я бот для создания задач в Битрикс24.\n\n"
         "Чтобы создать задачу, упомяни меня в сообщении:\n"
         "@бот, текст задачи\n\n"
         "Пример:\n"
         "@bitmugle, Зум по встрече с партнерами"
+    )
+
+
+async def create_task_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик команды /create - открывает Mini App для создания задачи"""
+    webhook_url = os.getenv("WEBHOOK_URL") or os.getenv("RAILWAY_PUBLIC_DOMAIN")
+    if webhook_url and not webhook_url.startswith("http"):
+        webhook_url = f"https://{webhook_url}"
+    
+    if not webhook_url:
+        await update.message.reply_text(
+            "⚠️ Mini App недоступен. Используйте стандартный способ создания задачи через @ упоминание."
+        )
+        return
+    
+    # Убираем завершающий слеш
+    if webhook_url.endswith("/"):
+        webhook_url = webhook_url.rstrip("/")
+    
+    # Создаем уникальный токен для сессии Mini App
+    session_token = secrets.token_urlsafe(32)
+    
+    # Получаем ID создателя задачи
+    telegram_user_id = update.effective_user.id
+    
+    # Определяем Bitrix ID создателя
+    creator_bitrix_id = TELEGRAM_TO_BITRIX_MAPPING.get(telegram_user_id)
+    if not creator_bitrix_id:
+        creator_info = bitrix_client.get_user_by_telegram_id(telegram_user_id)
+        if creator_info:
+            creator_bitrix_id = int(creator_info.get("ID"))
+            TELEGRAM_TO_BITRIX_MAPPING[telegram_user_id] = creator_bitrix_id
+    
+    if not creator_bitrix_id:
+        await update.message.reply_text(
+            "❌ Ваш Telegram аккаунт не связан с Битрикс24.\n\n"
+            "Используйте команду:\n"
+            "/link bitrix_user_id"
+        )
+        return
+    
+    # Получаем информацию о создателе
+    creator_info = bitrix_client.get_user_by_id(creator_bitrix_id)
+    creator_name = f"{creator_info.get('NAME', '')} {creator_info.get('LAST_NAME', '')}".strip() if creator_info else f"ID: {creator_bitrix_id}"
+    
+    # Сохраняем данные сессии
+    context.bot_data[f"miniapp_session_{session_token}"] = {
+        "creator_bitrix_id": creator_bitrix_id,
+        "responsible_bitrix_id": None,
+        "original_message_text": "",
+        "creator_name": creator_name,
+        "responsible_name": "",
+        "creator_telegram_id": telegram_user_id,
+        "responsible_telegram_id": None,
+        "chat_id": update.message.chat_id,
+        "message_id": update.message.message_id,
+        "timestamp": datetime.now().isoformat()
+    }
+    
+    # Формируем URL для Mini App
+    query_params = urlencode({"token": session_token})
+    web_app_url = f"{webhook_url}/miniapp?{query_params}"
+    web_app_info = WebAppInfo(url=web_app_url)
+    
+    button = InlineKeyboardButton(
+        "📋 Открыть форму создания задачи",
+        web_app=web_app_info
+    )
+    keyboard = InlineKeyboardMarkup([[button]])
+    
+    await update.message.reply_text(
+        "📋 Нажмите кнопку ниже, чтобы открыть форму создания задачи:",
+        reply_markup=keyboard
     )
 
 
@@ -194,6 +297,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "@bitmugle, Зум по встрече с партнерами\n\n"
         "Команды:\n"
         "/start - Начать работу\n"
+        "/create - Создать задачу (открывает форму)\n"
         "/help - Показать справку\n"
         "/link bitrix_id - Связать ваш Telegram аккаунт с ID пользователя Битрикс24\n"
         "  (Telegram ID будет сохранен в профиле пользователя в Bitrix24)\n"
@@ -913,6 +1017,42 @@ async def setup_menu_button(application: Application):
         logger.warning("Бот будет работать без кнопки меню")
 
 
+async def setup_bot_commands(application: Application):
+    """
+    Настройка команд бота для доступа через меню прикрепления файлов
+    Команды будут доступны в меню прикрепления (кнопка скрепки)
+    """
+    try:
+        # Команды, которые будут доступны в меню прикрепления файлов
+        commands = [
+            BotCommand("start", "Начать работу с ботом"),
+            BotCommand("create", "Создать задачу в Битрикс24"),
+            BotCommand("help", "Показать справку"),
+        ]
+        
+        # Устанавливаем команды для всех чатов
+        await application.bot.set_my_commands(commands)
+        logger.info("✅ Команды бота успешно установлены")
+        logger.info("   Команды будут доступны в меню прикрепления файлов (кнопка скрепки)")
+        
+        # Также устанавливаем команды для меню прикрепления файлов
+        # Это позволяет командам появляться в меню прикрепления
+        try:
+            await application.bot.set_my_commands(
+                commands,
+                scope=None,  # Для всех чатов
+                language_code=None
+            )
+            logger.info("✅ Команды для меню прикрепления установлены")
+        except Exception as scope_error:
+            logger.warning(f"Не удалось установить команды для меню прикрепления: {scope_error}")
+            logger.info("Команды все равно будут доступны через /")
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка при настройке команд бота: {e}", exc_info=True)
+        logger.warning("Бот будет работать без настроенных команд")
+
+
 
 
 def main():
@@ -957,6 +1097,7 @@ def main():
     # ВАЖНО: Обработчик reply-сообщений должен быть зарегистрирован ДО ConversationHandler,
     # чтобы он мог перехватить сообщения раньше
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("create", create_task_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("link", link_user))
     application.add_handler(CommandHandler("link_username", link_username))
@@ -1027,6 +1168,9 @@ def main():
                         
                         # Настраиваем кнопку меню (Menu Button)
                         await setup_menu_button(application)
+                        
+                        # Настраиваем команды бота для доступа через меню прикрепления файлов
+                        await setup_bot_commands(application)
                     except Exception as init_error:
                         logger.error(f"КРИТИЧЕСКАЯ ОШИБКА при инициализации Telegram приложения: {init_error}", exc_info=True)
                         # Не поднимаем исключение, чтобы сервер продолжал работать
@@ -1431,9 +1575,10 @@ def main():
         # Используем polling для локальной разработки
         logger.info("Запуск бота в режиме polling...")
         
-        # Настраиваем кнопку меню перед запуском polling
+        # Настраиваем кнопку меню и команды перед запуском polling
         async def post_init_polling(app: Application):
             await setup_menu_button(app)
+            await setup_bot_commands(app)
         
         application.post_init = post_init_polling
         application.run_polling(allowed_updates=Update.ALL_TYPES)
