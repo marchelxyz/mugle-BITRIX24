@@ -12,7 +12,7 @@ from typing import Dict, Optional, List
 from urllib.parse import urlencode
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from dotenv import load_dotenv
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo, MenuButtonWebApp
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -877,6 +877,42 @@ def start_health_check_thread(port: int):
     return thread
 
 
+async def setup_menu_button(application: Application):
+    """
+    Настройка кнопки меню бота (Menu Button)
+    Эта кнопка появляется внизу чата рядом с полем ввода
+    и позволяет быстро открыть Mini App
+    """
+    try:
+        webhook_url = os.getenv("WEBHOOK_URL") or os.getenv("RAILWAY_PUBLIC_DOMAIN")
+        if webhook_url and not webhook_url.startswith("http"):
+            webhook_url = f"https://{webhook_url}"
+        
+        if not webhook_url:
+            logger.warning("WEBHOOK_URL не установлен, кнопка меню не будет настроена")
+            return
+        
+        # Убираем завершающий слеш
+        if webhook_url.endswith("/"):
+            webhook_url = webhook_url.rstrip("/")
+        
+        # Создаем WebAppInfo для кнопки меню
+        web_app_info = WebAppInfo(url=f"{webhook_url}/miniapp")
+        
+        # Устанавливаем кнопку меню как Web App
+        await application.bot.set_chat_menu_button(
+            menu_button=MenuButtonWebApp(
+                text="📋 Создать задачу",
+                web_app=web_app_info
+            )
+        )
+        logger.info("✅ Кнопка меню успешно установлена")
+        logger.info(f"   URL Mini App: {webhook_url}/miniapp")
+    except Exception as e:
+        logger.error(f"❌ Ошибка при настройке кнопки меню: {e}", exc_info=True)
+        logger.warning("Бот будет работать без кнопки меню")
+
+
 
 
 def main():
@@ -988,6 +1024,9 @@ def main():
                             drop_pending_updates=True
                         )
                         logger.info(f"Webhook установлен успешно: {webhook_result}")
+                        
+                        # Настраиваем кнопку меню (Menu Button)
+                        await setup_menu_button(application)
                     except Exception as init_error:
                         logger.error(f"КРИТИЧЕСКАЯ ОШИБКА при инициализации Telegram приложения: {init_error}", exc_info=True)
                         # Не поднимаем исключение, чтобы сервер продолжал работать
@@ -1391,6 +1430,12 @@ def main():
     else:
         # Используем polling для локальной разработки
         logger.info("Запуск бота в режиме polling...")
+        
+        # Настраиваем кнопку меню перед запуском polling
+        async def post_init_polling(app: Application):
+            await setup_menu_button(app)
+        
+        application.post_init = post_init_polling
         application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
