@@ -12,13 +12,14 @@ logger = logging.getLogger(__name__)
 class Bitrix24Client:
     """Клиент для работы с API Битрикс24"""
     
-    def __init__(self, domain: str, webhook_token: str):
+    def __init__(self, domain: str, webhook_token: str, telegram_field_name: str = None):
         """
         Инициализация клиента Битрикс24
         
         Args:
             domain: Домен Битрикс24 (например, your-domain.bitrix24.ru)
             webhook_token: Токен вебхука для доступа к API
+            telegram_field_name: Название поля для хранения Telegram ID (по умолчанию UF_TELEGRAM)
         """
         if domain is None:
             raise ValueError("BITRIX24_DOMAIN не установлен в переменных окружения")
@@ -28,6 +29,8 @@ class Bitrix24Client:
         self.domain = domain.rstrip('/')
         self.webhook_token = webhook_token
         self.base_url = f"https://{self.domain}/rest/{webhook_token}"
+        # Название поля для хранения Telegram ID (по умолчанию UF_TELEGRAM, так как пользователь создал поле "Telegram")
+        self.telegram_field_name = telegram_field_name or os.getenv("BITRIX24_TELEGRAM_FIELD_NAME", "UF_TELEGRAM")
     
     def _make_request(self, method: str, params: Dict = None, use_get: bool = False) -> Dict:
         """
@@ -255,8 +258,8 @@ class Bitrix24Client:
     
     def ensure_telegram_id_field(self) -> bool:
         """
-        Проверка и создание пользовательского поля UF_TELEGRAM_ID в Bitrix24
-        если оно еще не существует
+        Проверка и создание пользовательского поля для Telegram ID в Bitrix24
+        Поле создается один раз и становится доступным для всех пользователей
         
         Returns:
             True если поле существует или было создано, False в случае ошибки
@@ -269,63 +272,77 @@ class Bitrix24Client:
                 result = self._make_request("user.userfield.get", {})
                 fields = result.get("result", [])
                 
-                # Проверяем, есть ли поле UF_TELEGRAM_ID
+                # Проверяем, есть ли поле с нужным названием
                 for field in fields:
-                    if isinstance(field, dict) and field.get("FIELD_NAME") == "UF_TELEGRAM_ID":
-                        logger.info("Поле UF_TELEGRAM_ID уже существует в Bitrix24")
+                    if isinstance(field, dict) and field.get("FIELD_NAME") == self.telegram_field_name:
+                        logger.info(f"✅ Поле {self.telegram_field_name} уже существует в Bitrix24")
                         return True
             except Exception as get_error:
                 # Если метод не работает, пробуем другой способ
                 logger.debug(f"Метод user.userfield.get не сработал: {get_error}")
                 # Пробуем получить конкретное поле
                 try:
-                    result = self._make_request("user.userfield.get", {"FIELD": "UF_TELEGRAM_ID"})
+                    result = self._make_request("user.userfield.get", {"FIELD": self.telegram_field_name})
                     if result.get("result") and len(result.get("result", [])) > 0:
-                        logger.info("Поле UF_TELEGRAM_ID уже существует в Bitrix24")
+                        logger.info(f"✅ Поле {self.telegram_field_name} уже существует в Bitrix24")
                         return True
                 except Exception:
                     pass
             
-            # Создаем поле, если его нет
-            logger.info("Создание поля UF_TELEGRAM_ID в Bitrix24...")
+            # Поле не найдено - создаем его
+            logger.info(f"📝 Создание поля {self.telegram_field_name} в Bitrix24...")
             field_data = {
                 "fields": {
-                    "FIELD_NAME": "UF_TELEGRAM_ID",
-                    "USER_TYPE_ID": "string",
+                    "FIELD_NAME": self.telegram_field_name,
+                    "USER_TYPE_ID": "string",  # Тип поля - строка
                     "XML_ID": "TELEGRAM_ID",
                     "SORT": 100,
-                    "MULTIPLE": "N",
-                    "MANDATORY": "N",
-                    "SHOW_FILTER": "Y",
-                    "SHOW_IN_LIST": "Y",
-                    "EDIT_IN_LIST": "Y",
-                    "IS_SEARCHABLE": "Y",
+                    "MULTIPLE": "N",  # Одно значение (не множественное)
+                    "MANDATORY": "N",  # Не обязательное поле
+                    "SHOW_FILTER": "Y",  # Показывать в фильтрах
+                    "SHOW_IN_LIST": "Y",  # Показывать в списке пользователей
+                    "EDIT_IN_LIST": "Y",  # Можно редактировать в списке
+                    "IS_SEARCHABLE": "Y",  # Доступно для поиска
                     "SETTINGS": {
                         "DEFAULT_VALUE": "",
-                        "SIZE": 20,
+                        "SIZE": 20,  # Размер поля
                         "ROWS": 1,
                         "MIN_LENGTH": 0,
                         "MAX_LENGTH": 0,
                         "REGEXP": ""
-                    }
+                    },
+                    "LIST": [
+                        {"VALUE": "Telegram ID", "DEF": "Y"}  # Значение по умолчанию для списка
+                    ]
                 }
             }
             
             create_result = self._make_request("user.userfield.add", field_data)
             if create_result.get("result"):
-                logger.info("✅ Поле UF_TELEGRAM_ID успешно создано в Bitrix24")
+                field_id = create_result.get("result")
+                logger.info(f"✅ Поле {self.telegram_field_name} успешно создано в Bitrix24 (ID: {field_id})")
+                logger.info(f"💡 Поле теперь доступно для всех пользователей в их профилях")
                 return True
             else:
                 error = create_result.get("error", "Неизвестная ошибка")
-                logger.error(f"❌ Не удалось создать поле UF_TELEGRAM_ID: {error}")
+                error_description = create_result.get("error_description", "")
+                logger.error(f"❌ Не удалось создать поле {self.telegram_field_name}: {error}")
+                if error_description:
+                    logger.error(f"   Описание ошибки: {error_description}")
+                logger.info(f"💡 Убедитесь, что вебхук имеет права на создание пользовательских полей:")
+                logger.info(f"   Настройки → Разработчикам → Входящий вебхук → Выберите ваш вебхук")
+                logger.info(f"   Включите права: user.userfield.add и user.userfield.get")
                 return False
             
         except Exception as e:
             # Логируем ошибку для диагностики
-            logger.error(f"Ошибка при проверке/создании поля UF_TELEGRAM_ID: {e}", exc_info=True)
-            # Возвращаем True, чтобы бот продолжал работать
-            # Проблема может быть в правах вебхука или поле уже существует
-            return True
+            logger.error(f"Ошибка при проверке/создании поля {self.telegram_field_name}: {e}", exc_info=True)
+            logger.info(f"💡 Возможные причины:")
+            logger.info(f"   1. Вебхук не имеет прав на создание пользовательских полей")
+            logger.info(f"   2. Поле с таким кодом уже существует, но недоступно через API")
+            logger.info(f"   3. Проблемы с подключением к Bitrix24")
+            # Возвращаем False, чтобы показать, что поле не создано
+            return False
     
     def update_user_telegram_id(self, user_id: int, telegram_id: int) -> bool:
         """
@@ -339,16 +356,11 @@ class Bitrix24Client:
             True если обновление прошло успешно, False в случае ошибки
         """
         try:
-            # Убеждаемся, что поле существует
-            field_exists = self.ensure_telegram_id_field()
-            if not field_exists:
-                logger.warning(f"Поле UF_TELEGRAM_ID может не существовать. Попытка сохранения для пользователя {user_id}")
-            
-            # Обновляем пользователя
+            # Обновляем пользователя, используя название поля из конфигурации
             update_data = {
                 "ID": user_id,
                 "fields": {
-                    "UF_TELEGRAM_ID": str(telegram_id)
+                    self.telegram_field_name: str(telegram_id)
                 }
             }
             
@@ -356,11 +368,12 @@ class Bitrix24Client:
             success = result.get("result") is True
             
             if success:
-                logger.info(f"✅ Telegram ID {telegram_id} успешно сохранен для пользователя Bitrix24 {user_id}")
+                logger.info(f"✅ Telegram ID {telegram_id} успешно сохранен в поле '{self.telegram_field_name}' для пользователя Bitrix24 {user_id}")
             else:
                 error = result.get("error", "Неизвестная ошибка")
                 error_description = result.get("error_description", "")
                 logger.error(f"❌ Не удалось сохранить Telegram ID для пользователя {user_id}: {error} - {error_description}")
+                logger.info(f"💡 Убедитесь, что поле '{self.telegram_field_name}' существует в Bitrix24 и вебхук имеет права на его изменение")
             
             return success
             
@@ -379,10 +392,10 @@ class Bitrix24Client:
             Информация о пользователе или None
         """
         try:
-            # Ищем пользователя по пользовательскому полю UF_TELEGRAM_ID
+            # Ищем пользователя по пользовательскому полю (используем название из конфигурации)
             result = self._make_request("user.get", {
                 "FILTER": {
-                    "UF_TELEGRAM_ID": str(telegram_id)
+                    self.telegram_field_name: str(telegram_id)
                 }
             })
             
@@ -412,9 +425,9 @@ class Bitrix24Client:
         """
         try:
             user_info = self.get_user_by_id(user_id)
-            if user_info and user_info.get("UF_TELEGRAM_ID"):
+            if user_info and user_info.get(self.telegram_field_name):
                 try:
-                    return int(user_info["UF_TELEGRAM_ID"])
+                    return int(user_info[self.telegram_field_name])
                 except (ValueError, TypeError):
                     return None
         except Exception:
@@ -437,7 +450,7 @@ class Bitrix24Client:
             loaded_count = 0
             for user in users:
                 user_id = user.get("ID")
-                telegram_id_str = user.get("UF_TELEGRAM_ID")
+                telegram_id_str = user.get(self.telegram_field_name)
                 
                 if user_id and telegram_id_str:
                     try:
