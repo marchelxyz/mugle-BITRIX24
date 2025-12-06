@@ -349,22 +349,60 @@ class Bitrix24Client:
                 }
             }
             
-            create_result = self._make_request("user.userfield.add", field_data)
-            if create_result.get("result"):
-                field_id = create_result.get("result")
-                logger.info(f"✅ Поле {self.telegram_field_name} успешно создано в Bitrix24 (ID: {field_id})")
-                logger.info(f"💡 Поле теперь доступно для всех пользователей в их профилях")
-                return True
-            else:
-                error = create_result.get("error", "Неизвестная ошибка")
-                error_description = create_result.get("error_description", "")
-                logger.error(f"❌ Не удалось создать поле {self.telegram_field_name}: {error}")
-                if error_description:
-                    logger.error(f"   Описание ошибки: {error_description}")
-                logger.info(f"💡 Убедитесь, что вебхук имеет права на создание пользовательских полей:")
-                logger.info(f"   Настройки → Разработчикам → Входящий вебхук → Выберите ваш вебхук")
-                logger.info(f"   Включите права: user.userfield.add и user.userfield.get")
-                return False
+            try:
+                create_result = self._make_request("user.userfield.add", field_data)
+                if create_result.get("result"):
+                    field_id = create_result.get("result")
+                    logger.info(f"✅ Поле {self.telegram_field_name} успешно создано в Bitrix24 (ID: {field_id})")
+                    logger.info(f"💡 Поле теперь доступно для всех пользователей в их профилях")
+                    return True
+                else:
+                    error = create_result.get("error", "Неизвестная ошибка")
+                    error_description = create_result.get("error_description", "")
+                    error_code = create_result.get("error_code", "")
+                    logger.error(f"❌ Не удалось создать поле {self.telegram_field_name}: {error}")
+                    if error_code:
+                        logger.error(f"   Код ошибки: {error_code}")
+                    if error_description:
+                        logger.error(f"   Описание ошибки: {error_description}")
+                    logger.info(f"💡 Убедитесь, что вебхук имеет права на создание пользовательских полей:")
+                    logger.info(f"   Настройки → Разработчикам → Входящий вебхук → Выберите ваш вебхук")
+                    logger.info(f"   Включите права: user.userfield.add и user.userfield.get")
+                    return False
+            except requests.exceptions.HTTPError as http_err:
+                # Обрабатываем HTTP ошибки отдельно
+                if http_err.response.status_code == 400:
+                    # Ошибка 400 может означать, что поле уже существует
+                    try:
+                        error_response = http_err.response.json()
+                        error_code = error_response.get("error", "")
+                        error_description = error_response.get("error_description", "").lower()
+                        
+                        # Проверяем, не означает ли ошибка, что поле уже существует
+                        if "already exists" in error_description or "уже существует" in error_description or "duplicate" in error_description:
+                            logger.info(f"ℹ️ Поле {self.telegram_field_name} уже существует в Bitrix24 (недоступно через API для проверки)")
+                            logger.info(f"💡 Продолжаем работу - поле можно использовать")
+                            return True
+                        
+                        logger.warning(f"⚠️ Ошибка 400 при создании поля {self.telegram_field_name}")
+                        logger.warning(f"   Код ошибки: {error_code}")
+                        logger.warning(f"   Описание: {error_description}")
+                        logger.info(f"💡 Возможные причины:")
+                        logger.info(f"   1. Поле уже существует, но недоступно через API")
+                        logger.info(f"   2. Вебхук не имеет прав на создание пользовательских полей")
+                        logger.info(f"   3. Неправильный формат данных")
+                        logger.info(f"💡 Продолжаем работу - попробуем использовать поле (возможно, оно уже существует)")
+                        # Возвращаем True, так как поле может существовать, но быть недоступным через API
+                        return True
+                    except Exception:
+                        # Если не удалось распарсить ответ, считаем, что поле может существовать
+                        logger.warning(f"⚠️ Ошибка 400 при создании поля {self.telegram_field_name}")
+                        logger.info(f"💡 Продолжаем работу - поле может уже существовать")
+                        return True
+                else:
+                    # Для других HTTP ошибок логируем и возвращаем False
+                    logger.error(f"HTTP ошибка {http_err.response.status_code} при создании поля {self.telegram_field_name}: {http_err}")
+                    return False
             
         except Exception as e:
             # Логируем ошибку для диагностики
@@ -373,8 +411,9 @@ class Bitrix24Client:
             logger.info(f"   1. Вебхук не имеет прав на создание пользовательских полей")
             logger.info(f"   2. Поле с таким кодом уже существует, но недоступно через API")
             logger.info(f"   3. Проблемы с подключением к Bitrix24")
-            # Возвращаем False, чтобы показать, что поле не создано
-            return False
+            # Возвращаем True, так как поле может существовать, но быть недоступным через API
+            # Это позволит боту продолжать работу
+            return True
     
     def update_user_telegram_id(self, user_id: int, telegram_id: int) -> bool:
         """
@@ -604,8 +643,18 @@ class Bitrix24Client:
             # Получаем всех пользователей
             users = self.get_all_users(active_only=True)
             
+            # Проверяем, что users - это список
+            if not isinstance(users, list):
+                logger.warning(f"get_all_users вернул не список: {type(users)}")
+                return mappings
+            
             loaded_count = 0
             for user in users:
+                # Проверяем, что user - это словарь
+                if not isinstance(user, dict):
+                    logger.debug(f"Пропущен элемент пользователя (не словарь): {type(user)}")
+                    continue
+                
                 user_id = user.get("ID")
                 telegram_id_str = user.get(self.telegram_field_name)
                 

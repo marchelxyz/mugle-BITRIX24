@@ -83,7 +83,40 @@ except Exception as e:
     logger.error(f"Ошибка при загрузке связей из Bitrix24: {e}", exc_info=True)
     logger.warning("Бот будет работать, но связи нужно будет устанавливать заново")
 
+# Состояния диалога
+WAITING_FOR_RESPONSIBLES, WAITING_FOR_DEADLINE, WAITING_FOR_DESCRIPTION, WAITING_FOR_FILES = range(4)
+
+# Хранилище соответствий Telegram User ID -> Bitrix24 User ID
+# В продакшене это должно быть в базе данных
+TELEGRAM_TO_BITRIX_MAPPING: Dict[int, int] = {}
+
+# Хранилище соответствий Telegram username -> Bitrix24 User ID (для поиска по имени)
+USERNAME_TO_BITRIX_MAPPING: Dict[str, int] = {}
+
+# Маппинг Telegram thread_id -> Bitrix24 Department ID
+# Формат: {thread_id: department_id}
+# thread_id - это ID темы в супергруппе Telegram
+# department_id - это ID подразделения в Bitrix24
+# Можно настроить через переменную окружения THREAD_DEPARTMENT_MAPPING в формате JSON:
+# {"123": 5, "456": 10} где 123 и 456 - thread_id, 5 и 10 - department_id
+THREAD_TO_DEPARTMENT_MAPPING: Dict[int, int] = {}
+
+# Загружаем маппинг из переменной окружения при старте
+try:
+    import json
+    thread_mapping_str = os.getenv("THREAD_DEPARTMENT_MAPPING")
+    if thread_mapping_str:
+        thread_mapping_dict = json.loads(thread_mapping_str)
+        # Преобразуем ключи в int (Telegram thread_id всегда int)
+        THREAD_TO_DEPARTMENT_MAPPING = {int(k): int(v) for k, v in thread_mapping_dict.items()}
+        logger.info(f"✅ Загружено {len(THREAD_TO_DEPARTMENT_MAPPING)} маппингов thread_id -> department_id")
+    else:
+        logger.info("ℹ️ THREAD_DEPARTMENT_MAPPING не установлен. Автоматический выбор отдела по теме отключен.")
+except Exception as e:
+    logger.warning(f"⚠️ Ошибка при загрузке THREAD_DEPARTMENT_MAPPING: {e}. Автоматический выбор отдела по теме отключен.")
+
 # Загружаем и логируем все подразделения из Bitrix24 при старте
+# ВАЖНО: Вызывается ПОСЛЕ инициализации THREAD_TO_DEPARTMENT_MAPPING
 def log_all_departments():
     """Функция для логирования всех подразделений из Bitrix24"""
     try:
@@ -132,40 +165,8 @@ def log_all_departments():
         logger.error(f"Ошибка при загрузке подразделений из Bitrix24: {e}", exc_info=True)
         logger.warning("Бот будет работать, но список подразделений недоступен")
 
-# Вызываем функцию логирования при старте
+# Вызываем функцию логирования при старте (после инициализации THREAD_TO_DEPARTMENT_MAPPING)
 log_all_departments()
-
-# Состояния диалога
-WAITING_FOR_RESPONSIBLES, WAITING_FOR_DEADLINE, WAITING_FOR_DESCRIPTION, WAITING_FOR_FILES = range(4)
-
-# Хранилище соответствий Telegram User ID -> Bitrix24 User ID
-# В продакшене это должно быть в базе данных
-TELEGRAM_TO_BITRIX_MAPPING: Dict[int, int] = {}
-
-# Хранилище соответствий Telegram username -> Bitrix24 User ID (для поиска по имени)
-USERNAME_TO_BITRIX_MAPPING: Dict[str, int] = {}
-
-# Маппинг Telegram thread_id -> Bitrix24 Department ID
-# Формат: {thread_id: department_id}
-# thread_id - это ID темы в супергруппе Telegram
-# department_id - это ID подразделения в Bitrix24
-# Можно настроить через переменную окружения THREAD_DEPARTMENT_MAPPING в формате JSON:
-# {"123": 5, "456": 10} где 123 и 456 - thread_id, 5 и 10 - department_id
-THREAD_TO_DEPARTMENT_MAPPING: Dict[int, int] = {}
-
-# Загружаем маппинг из переменной окружения при старте
-try:
-    import json
-    thread_mapping_str = os.getenv("THREAD_DEPARTMENT_MAPPING")
-    if thread_mapping_str:
-        thread_mapping_dict = json.loads(thread_mapping_str)
-        # Преобразуем ключи в int (Telegram thread_id всегда int)
-        THREAD_TO_DEPARTMENT_MAPPING = {int(k): int(v) for k, v in thread_mapping_dict.items()}
-        logger.info(f"✅ Загружено {len(THREAD_TO_DEPARTMENT_MAPPING)} маппингов thread_id -> department_id")
-    else:
-        logger.info("ℹ️ THREAD_DEPARTMENT_MAPPING не установлен. Автоматический выбор отдела по теме отключен.")
-except Exception as e:
-    logger.warning(f"⚠️ Ошибка при загрузке THREAD_DEPARTMENT_MAPPING: {e}. Автоматический выбор отдела по теме отключен.")
 
 
 def parse_initial_message(text: str, bot_username: str) -> Optional[str]:
