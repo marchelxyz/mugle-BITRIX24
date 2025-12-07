@@ -1857,8 +1857,28 @@ def main():
                     - Новый формат: {"event": "ONUSERUPDATE", "data": {...}}
                     """
                     try:
-                        # Получаем данные от Bitrix24
+                        # Получаем данные от Bitrix24 (читаем один раз)
                         data = await request.json()
+                        
+                        # Проверка токена исходящего вебхука (для безопасности)
+                        outgoing_webhook_token = os.getenv("BITRIX24_OUTGOING_WEBHOOK_TOKEN")
+                        if outgoing_webhook_token:
+                            # Bitrix24 может отправлять токен в заголовке, параметрах запроса или в теле
+                            # Проверяем заголовок X-Bitrix-Token или параметр token
+                            token_from_header = request.headers.get('X-Bitrix-Token') or request.headers.get('Authorization', '').replace('Bearer ', '')
+                            token_from_query = request.query.get('token')
+                            # Пробуем получить токен из тела запроса
+                            token_from_body = None
+                            if isinstance(data, dict):
+                                token_from_body = data.get('token') or data.get('auth', {}).get('token') if isinstance(data.get('auth'), dict) else None
+                            
+                            received_token = token_from_header or token_from_query or token_from_body
+                            
+                            if not received_token or received_token != outgoing_webhook_token:
+                                logger.warning(f"⚠️ Неверный токен исходящего вебхука. Получен: {received_token[:10] if received_token else 'None'}...")
+                                return web.json_response({'status': 'error', 'message': 'Invalid token'}, status=403)
+                            
+                            logger.debug("✅ Токен исходящего вебхука проверен успешно")
                         
                         logger.debug(f"Получены данные от Bitrix24: {data}")
                         
