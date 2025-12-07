@@ -1868,8 +1868,8 @@ def main():
                         
                         logger.info(f"Получено событие от Bitrix24: {event}")
                         
-                        # Обрабатываем только события обновления пользователей
-                        if 'USERUPDATE' in event.upper() or 'USER' in event.upper():
+                        # Обрабатываем события пользователей (добавление и обновление)
+                        if 'USERUPDATE' in event.upper() or 'USERADD' in event.upper() or (event.upper().startswith('ONUSER') and 'USER' in event.upper()):
                             # Получаем данные пользователя
                             # Пробуем разные форматы данных
                             user_data = None
