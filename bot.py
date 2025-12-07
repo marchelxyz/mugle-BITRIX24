@@ -50,38 +50,21 @@ bitrix_client = Bitrix24Client(
     telegram_field_name=os.getenv("BITRIX24_TELEGRAM_FIELD_NAME", "UF_USR_TELEGRAM")
 )
 
-# Проверяем и создаем поле для Telegram ID в Bitrix24 при старте
-# Поле создается автоматически через API, если вебхук имеет права user.userfield
-# По умолчанию используется поле UF_USR_TELEGRAM (можно настроить через BITRIX24_TELEGRAM_FIELD_NAME)
-# Поле создается один раз и становится доступным для всех пользователей
-try:
-    field_created = bitrix_client.ensure_telegram_id_field()
-    if field_created:
-        logger.info(f"✅ Поле {bitrix_client.telegram_field_name} проверено/создано в Bitrix24")
-        logger.info(f"💡 Поле доступно для всех пользователей в их профилях")
-    else:
-        logger.warning(f"⚠️ Не удалось создать поле {bitrix_client.telegram_field_name} в Bitrix24.")
-        logger.info(f"💡 Возможные причины:")
-        logger.info(f"   1. Вебхук не имеет прав на создание пользовательских полей (user.userfield)")
-        logger.info(f"   2. Поле уже существует, но недоступно через API")
-        logger.info(f"   Решение: Добавьте права user.userfield к вебхуку или создайте поле вручную:")
-        logger.info(f"   Настройки → Пользователи → Пользовательские поля → Создать поле '{bitrix_client.telegram_field_name}'")
-except Exception as e:
-    logger.error(f"❌ Ошибка при проверке/создании поля {bitrix_client.telegram_field_name}: {e}", exc_info=True)
-    logger.warning("Бот будет работать, но сохранение Telegram ID в Bitrix24 может не работать")
-
 # Загружаем существующие связи из Bitrix24 при старте
-# Это позволяет восстановить маппинг после перезапуска бота
+# Связи хранятся в памяти и обновляются через исходящий вебхук от Bitrix24
 try:
+    logger.info("Загрузка связей из Bitrix24...")
     loaded_mappings = bitrix_client.load_all_telegram_mappings()
     if loaded_mappings:
         TELEGRAM_TO_BITRIX_MAPPING.update(loaded_mappings)
-        logger.info(f"✅ Восстановлено {len(loaded_mappings)} связей из Bitrix24")
+        logger.info(f"✅ Загружено {len(loaded_mappings)} связей из Bitrix24")
     else:
         logger.info("ℹ️ В Bitrix24 пока нет сохраненных связей. Используйте команду /link для связывания.")
+        logger.info("💡 Рекомендуется настроить исходящий вебхук в Bitrix24 для автоматической синхронизации")
 except Exception as e:
     logger.error(f"Ошибка при загрузке связей из Bitrix24: {e}", exc_info=True)
     logger.warning("Бот будет работать, но связи нужно будет устанавливать заново")
+    logger.info("💡 Убедитесь, что входящий вебхук настроен правильно и имеет права на чтение пользователей")
 
 # Состояния диалога
 WAITING_FOR_RESPONSIBLES, WAITING_FOR_DEADLINE, WAITING_FOR_DESCRIPTION, WAITING_FOR_FILES = range(4)
@@ -248,6 +231,41 @@ def parse_deadline(deadline_text: str) -> Optional[str]:
         return None
 
 
+def get_bitrix_user_id_by_telegram_id(telegram_id: int) -> Optional[int]:
+    """
+    Получение Bitrix24 User ID по Telegram ID
+    Проверяет в следующем порядке:
+    1. Локальное хранилище (память) - кеш из исходящего вебхука
+    2. Bitrix24 API - прямой запрос к API
+    
+    Args:
+        telegram_id: Telegram User ID
+        
+    Returns:
+        Bitrix24 User ID или None
+    """
+    # Сначала проверяем локальное хранилище (кеш)
+    bitrix_id = TELEGRAM_TO_BITRIX_MAPPING.get(telegram_id)
+    if bitrix_id:
+        return bitrix_id
+    
+    # Если не найдено в кеше, запрашиваем через Bitrix24 API
+    try:
+        user_info = bitrix_client.get_user_by_telegram_id(telegram_id)
+        if user_info and user_info.get("ID"):
+            try:
+                bitrix_id = int(user_info.get("ID"))
+                # Сохраняем в локальное хранилище для быстрого доступа
+                TELEGRAM_TO_BITRIX_MAPPING[telegram_id] = bitrix_id
+                return bitrix_id
+            except (ValueError, TypeError):
+                pass
+    except Exception:
+        pass
+    
+    return None
+
+
 def find_bitrix_user_by_name(name: str) -> Optional[int]:
     """
     Поиск пользователя Битрикс24 по имени и фамилии
@@ -358,15 +376,7 @@ async def create_task_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     telegram_user_id = update.effective_user.id
     
     # Определяем Bitrix ID создателя
-    creator_bitrix_id = TELEGRAM_TO_BITRIX_MAPPING.get(telegram_user_id)
-    if not creator_bitrix_id:
-        creator_info = bitrix_client.get_user_by_telegram_id(telegram_user_id)
-        if creator_info and creator_info.get("ID"):
-            try:
-                creator_bitrix_id = int(creator_info.get("ID"))
-                TELEGRAM_TO_BITRIX_MAPPING[telegram_user_id] = creator_bitrix_id
-            except (ValueError, TypeError) as e:
-                logger.warning(f"Не удалось преобразовать ID создателя в int: {e}, creator_info={creator_info}")
+    creator_bitrix_id = get_bitrix_user_id_by_telegram_id(telegram_user_id)
     
     if not creator_bitrix_id:
         await update.message.reply_text(
@@ -531,7 +541,7 @@ async def link_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Использование: /link bitrix_user_id\n\n"
             "Пример: /link 123\n\n"
             "Эта команда свяжет ваш Telegram аккаунт с пользователем Битрикс24.\n"
-            "Telegram ID будет сохранен в профиле пользователя в Bitrix24."
+            "Связь будет сохранена в базе данных бота."
         )
         return
     
@@ -552,44 +562,29 @@ async def link_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         success = bitrix_client.update_user_telegram_id(bitrix_user_id, telegram_user_id)
         
         if success:
-            # Также сохраняем в локальное хранилище для быстрого доступа
+            # Сохраняем в локальное хранилище для быстрого доступа
             TELEGRAM_TO_BITRIX_MAPPING[telegram_user_id] = bitrix_user_id
             
-            # Проверяем, что данные действительно сохранились
-            # Получаем обновленную информацию о пользователе
-            updated_user_info = bitrix_client.get_user_by_id(bitrix_user_id)
-            saved_telegram_id = None
-            if updated_user_info:
-                saved_telegram_id = updated_user_info.get(bitrix_client.telegram_field_name)
+            user_name = f"{user_info.get('NAME', '')} {user_info.get('LAST_NAME', '')}".strip()
             
             response_text = (
                 f"✅ Связь установлена и сохранена в Bitrix24:\n"
                 f"Ваш Telegram аккаунт (ID: {telegram_user_id}) → "
-                f"{user_info.get('NAME', '')} {user_info.get('LAST_NAME', '')} "
-                f"(ID: {bitrix_user_id})\n\n"
+                f"{user_name} (ID: {bitrix_user_id})\n\n"
             )
             
-            if saved_telegram_id:
-                response_text += f"✅ Подтверждено: Telegram ID {saved_telegram_id} найден в профиле пользователя в Bitrix24\n\n"
-            else:
-                response_text += (
-                    f"⚠️ Внимание: Telegram ID не найден в ответе API Bitrix24.\n"
-                    f"Это может означать, что:\n"
-                    f"1. Поле '{bitrix_client.telegram_field_name}' не возвращается в API\n"
-                    f"2. Данные еще обрабатываются (попробуйте проверить профиль в Bitrix24 вручную)\n\n"
-                )
+            # Проверяем, настроен ли исходящий вебхук
+            response_text += (
+                f"💡 Если настроен исходящий вебхук в Bitrix24, связь будет автоматически "
+                f"синхронизирована при обновлении пользователя.\n\n"
+            )
             
             response_text += f"Теперь бот будет автоматически определять ваш аккаунт!"
             
             await update.message.reply_text(response_text)
         else:
-            # Если не удалось сохранить в Bitrix24, сохраняем только локально
-            TELEGRAM_TO_BITRIX_MAPPING[telegram_user_id] = bitrix_user_id
             await update.message.reply_text(
-                f"⚠️ Связь установлена локально:\n"
-                f"Ваш Telegram аккаунт → {user_info.get('NAME', '')} {user_info.get('LAST_NAME', '')} "
-                f"(ID: {bitrix_user_id})\n\n"
-                f"❌ Не удалось сохранить в Bitrix24.\n\n"
+                f"❌ Не удалось сохранить связь в Bitrix24.\n\n"
                 f"Возможные причины:\n"
                 f"1. Поле '{bitrix_client.telegram_field_name}' не существует в Bitrix24\n"
                 f"2. Вебхук не имеет прав на изменение пользователей (user.update)\n"
@@ -607,19 +602,19 @@ async def link_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def check_telegram_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда для проверки сохраненного Telegram ID в профиле пользователя Bitrix24"""
+    """Команда для проверки сохраненного Telegram ID в базе данных"""
     if not context.args or len(context.args) < 1:
         await update.message.reply_text(
             "Использование: /check_telegram_id bitrix_user_id\n\n"
             "Пример: /check_telegram_id 123\n\n"
-            "Эта команда проверит, сохранен ли Telegram ID в профиле пользователя Bitrix24."
+            "Эта команда проверит, сохранен ли Telegram ID в базе данных бота."
         )
         return
     
     try:
         bitrix_user_id = int(context.args[0])
         
-        # Получаем информацию о пользователе
+        # Получаем информацию о пользователе из Bitrix24
         user_info = bitrix_client.get_user_by_id(bitrix_user_id)
         if not user_info:
             await update.message.reply_text(
@@ -627,31 +622,42 @@ async def check_telegram_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
-        # Проверяем наличие Telegram ID
-        telegram_id = user_info.get(bitrix_client.telegram_field_name)
         user_name = f"{user_info.get('NAME', '')} {user_info.get('LAST_NAME', '')}".strip()
+        
+        # Проверяем наличие Telegram ID в Bitrix24
+        telegram_id = bitrix_client.get_user_telegram_id(bitrix_user_id)
+        
+        # Также проверяем в локальном кеше
+        if not telegram_id:
+            for tg_id, bx_id in TELEGRAM_TO_BITRIX_MAPPING.items():
+                if bx_id == bitrix_user_id:
+                    telegram_id = tg_id
+                    break
         
         response_text = (
             f"📋 Информация о пользователе Bitrix24:\n\n"
             f"👤 Имя: {user_name}\n"
             f"🆔 ID: {bitrix_user_id}\n"
-            f"📱 Поле '{bitrix_client.telegram_field_name}': "
+            f"📱 Telegram ID: "
         )
         
         if telegram_id:
             response_text += f"✅ {telegram_id}\n\n"
-            response_text += f"Telegram ID сохранен в профиле пользователя!"
+            response_text += f"Связь найдена в Bitrix24!"
+            
+            # Проверяем, есть ли в кеше
+            if telegram_id in TELEGRAM_TO_BITRIX_MAPPING:
+                response_text += "\n💡 Связь также загружена в память бота (кеш)."
         else:
             response_text += f"❌ Не найдено\n\n"
             response_text += (
-                f"Telegram ID не найден в профиле пользователя.\n\n"
-                f"Возможные причины:\n"
-                f"1. Telegram ID еще не был сохранен (используйте /link bitrix_user_id)\n"
-                f"2. Поле '{bitrix_client.telegram_field_name}' не возвращается в API\n"
-                f"3. Поле не существует в Bitrix24\n\n"
-                f"Проверьте профиль пользователя в Bitrix24 вручную:\n"
-                f"Настройки → Пользователи → Откройте профиль пользователя → "
-                f"Проверьте наличие поля '{bitrix_client.telegram_field_name}'"
+                f"Telegram ID не найден в Bitrix24.\n\n"
+                f"Используйте команду /link bitrix_user_id для связывания аккаунта.\n\n"
+                f"💡 Если Telegram ID сохранен в Bitrix24, но не отображается здесь, "
+                f"это может означать, что:\n"
+                f"1. Поле '{bitrix_client.telegram_field_name}' не возвращается в API\n"
+                f"2. Исходящий вебхук не настроен для синхронизации\n"
+                f"3. Данные еще обрабатываются Bitrix24"
             )
         
         await update.message.reply_text(response_text)
@@ -688,11 +694,15 @@ async def link_username(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
+        # Сохраняем в локальное хранилище (username mapping хранится только в памяти)
         USERNAME_TO_BITRIX_MAPPING[telegram_username] = bitrix_user_id
+        
+        user_name = f"{user_info.get('NAME', '')} {user_info.get('LAST_NAME', '')}".strip()
         await update.message.reply_text(
             f"✅ Связь установлена:\n"
-            f"@{telegram_username} → {user_info.get('NAME', '')} {user_info.get('LAST_NAME', '')} "
-            f"(ID: {bitrix_user_id})"
+            f"@{telegram_username} → {user_name} (ID: {bitrix_user_id})\n\n"
+            f"💡 Связь username хранится только в памяти и будет потеряна при перезапуске бота.\n"
+            f"Для постоянного хранения используйте команду /link с Telegram ID."
         )
     except ValueError:
         await update.message.reply_text("❌ ID пользователя должен быть числом")
@@ -729,20 +739,8 @@ async def start_task_creation(update: Update, context: ContextTypes.DEFAULT_TYPE
     # Получаем ID создателя задачи
     telegram_user_id = update.effective_user.id
     
-    # Сначала проверяем локальное хранилище
-    creator_id = TELEGRAM_TO_BITRIX_MAPPING.get(telegram_user_id)
-    
-    # Если не найдено локально, ищем в Bitrix24
-    if not creator_id:
-        user_info = bitrix_client.get_user_by_telegram_id(telegram_user_id)
-        if user_info and user_info.get("ID"):
-            try:
-                creator_id = int(user_info.get("ID"))
-                # Сохраняем в локальное хранилище для быстрого доступа
-                TELEGRAM_TO_BITRIX_MAPPING[telegram_user_id] = creator_id
-                logger.info(f"Пользователь найден в Bitrix24 по Telegram ID {telegram_user_id}: {creator_id}")
-            except (ValueError, TypeError) as e:
-                logger.warning(f"Не удалось преобразовать ID создателя в int: {e}, user_info={user_info}")
+    # Получаем Bitrix ID создателя
+    creator_id = get_bitrix_user_id_by_telegram_id(telegram_user_id)
     
     if not creator_id:
         await update.message.reply_text(
@@ -750,8 +748,10 @@ async def start_task_creation(update: Update, context: ContextTypes.DEFAULT_TYPE
             "Используйте команду:\n"
             "/link bitrix_user_id\n\n"
             "Чтобы узнать свой ID в Битрикс24, зайдите в профиль и посмотрите в URL.\n\n"
-            "После связывания ваш Telegram ID будет сохранен в Bitrix24, "
-            "и бот будет автоматически определять ваш аккаунт."
+            "После связывания связь будет сохранена в Bitrix24, "
+            "и бот будет автоматически определять ваш аккаунт.\n\n"
+            "💡 Рекомендуется настроить исходящий вебхук в Bitrix24 для автоматической "
+            "синхронизации данных при обновлении пользователей."
         )
         return ConversationHandler.END
     
@@ -1085,26 +1085,10 @@ async def handle_reply_with_mention(update: Update, context: ContextTypes.DEFAUL
             logger.info(f"Автоматически определен отдел {department_id} для thread_id {thread_id}")
     
     # Определяем Bitrix ID постановщика
-    creator_bitrix_id = TELEGRAM_TO_BITRIX_MAPPING.get(creator_telegram_id)
-    if not creator_bitrix_id:
-        creator_info = bitrix_client.get_user_by_telegram_id(creator_telegram_id)
-        if creator_info and creator_info.get("ID"):
-            try:
-                creator_bitrix_id = int(creator_info.get("ID"))
-                TELEGRAM_TO_BITRIX_MAPPING[creator_telegram_id] = creator_bitrix_id
-            except (ValueError, TypeError) as e:
-                logger.warning(f"Не удалось преобразовать ID создателя в int: {e}, creator_info={creator_info}")
+    creator_bitrix_id = get_bitrix_user_id_by_telegram_id(creator_telegram_id)
     
     # Определяем Bitrix ID исполнителя
-    responsible_bitrix_id = TELEGRAM_TO_BITRIX_MAPPING.get(responsible_telegram_id)
-    if not responsible_bitrix_id:
-        responsible_info = bitrix_client.get_user_by_telegram_id(responsible_telegram_id)
-        if responsible_info and responsible_info.get("ID"):
-            try:
-                responsible_bitrix_id = int(responsible_info.get("ID"))
-                TELEGRAM_TO_BITRIX_MAPPING[responsible_telegram_id] = responsible_bitrix_id
-            except (ValueError, TypeError) as e:
-                logger.warning(f"Не удалось преобразовать ID исполнителя в int: {e}, responsible_info={responsible_info}")
+    responsible_bitrix_id = get_bitrix_user_id_by_telegram_id(responsible_telegram_id)
     
     if not creator_bitrix_id:
         await message.reply_text(
@@ -1652,16 +1636,9 @@ def main():
                             logger.info(f"Определение пользователя по Telegram ID: {telegram_user_id}")
                             
                             # Определяем Bitrix ID пользователя
-                            creator_bitrix_id = TELEGRAM_TO_BITRIX_MAPPING.get(telegram_user_id)
-                            if not creator_bitrix_id:
-                                creator_info = bitrix_client.get_user_by_telegram_id(telegram_user_id)
-                                if creator_info and creator_info.get("ID"):
-                                    try:
-                                        creator_bitrix_id = int(creator_info.get("ID"))
-                                        TELEGRAM_TO_BITRIX_MAPPING[telegram_user_id] = creator_bitrix_id
-                                        logger.info(f"Пользователь найден в Bitrix24: {creator_bitrix_id}")
-                                    except (ValueError, TypeError) as e:
-                                        logger.warning(f"Не удалось преобразовать ID создателя в int: {e}, creator_info={creator_info}")
+                            creator_bitrix_id = get_bitrix_user_id_by_telegram_id(telegram_user_id)
+                            if creator_bitrix_id:
+                                logger.info(f"Пользователь найден: {creator_bitrix_id}")
                             
                             if not creator_bitrix_id:
                                 logger.warning(f"Пользователь {telegram_user_id} не найден в Bitrix24")
@@ -1867,6 +1844,105 @@ def main():
                         logger.error(f"Ошибка при создании задачи из Mini App: {e}", exc_info=True)
                         return web.json_response({'error': 'Внутренняя ошибка сервера'}, status=500)
                 
+                # API: Обработчик исходящего вебхука от Bitrix24
+                # Используется для получения уведомлений об обновлении пользователей
+                # и синхронизации Telegram ID из Bitrix24 в БД
+                async def bitrix_outgoing_webhook_handler(request):
+                    """
+                    Обработчик исходящего вебхука от Bitrix24
+                    Получает уведомления об обновлении пользователей и синхронизирует Telegram ID
+                    
+                    Формат данных от Bitrix24 может быть разным:
+                    - Старый формат: {"event": "ONUSERUPDATE", "data": {"FIELDS": {...}}}
+                    - Новый формат: {"event": "ONUSERUPDATE", "data": {...}}
+                    """
+                    try:
+                        # Получаем данные от Bitrix24
+                        data = await request.json()
+                        
+                        logger.debug(f"Получены данные от Bitrix24: {data}")
+                        
+                        # Проверяем тип события
+                        event = data.get('event', '')
+                        data_obj = data.get('data', {})
+                        
+                        logger.info(f"Получено событие от Bitrix24: {event}")
+                        
+                        # Обрабатываем только события обновления пользователей
+                        if 'USERUPDATE' in event.upper() or 'USER' in event.upper():
+                            # Получаем данные пользователя
+                            # Пробуем разные форматы данных
+                            user_data = None
+                            
+                            # Формат 1: data.FIELDS
+                            if isinstance(data_obj, dict) and 'FIELDS' in data_obj:
+                                user_data = data_obj['FIELDS']
+                            # Формат 2: data напрямую содержит поля пользователя
+                            elif isinstance(data_obj, dict) and 'ID' in data_obj:
+                                user_data = data_obj
+                            # Формат 3: data - это список с одним пользователем
+                            elif isinstance(data_obj, list) and len(data_obj) > 0:
+                                user_data = data_obj[0]
+                            
+                            if not user_data:
+                                logger.warning(f"Не удалось извлечь данные пользователя из события: {event}")
+                                return web.json_response({'status': 'ok'}, status=200)
+                            
+                            user_id = user_data.get('ID')
+                            
+                            if not user_id:
+                                logger.warning("Событие обновления пользователя без ID")
+                                return web.json_response({'status': 'ok'}, status=200)
+                            
+                            # Извлекаем Telegram ID из пользовательского поля
+                            telegram_field_name = bitrix_client.telegram_field_name
+                            telegram_id_str = user_data.get(telegram_field_name)
+                            
+                            # Также пробуем получить из других возможных полей
+                            if not telegram_id_str:
+                                # Пробуем альтернативные названия полей
+                                for alt_field in ['UF_USR_TELEGRAM', 'TELEGRAM_ID', 'TELEGRAM']:
+                                    telegram_id_str = user_data.get(alt_field)
+                                    if telegram_id_str:
+                                        logger.debug(f"Найден Telegram ID в поле {alt_field}")
+                                        break
+                            
+                            if telegram_id_str:
+                                try:
+                                    telegram_id = int(telegram_id_str)
+                                    user_id_int = int(user_id)
+                                    
+                                    # Проверяем, не изменилась ли связь в кеше
+                                    existing_bitrix_id = TELEGRAM_TO_BITRIX_MAPPING.get(telegram_id)
+                                    if existing_bitrix_id and existing_bitrix_id != user_id_int:
+                                        logger.warning(
+                                            f"⚠️ Конфликт связей: Telegram ID {telegram_id} уже связан с "
+                                            f"Bitrix24 User ID {existing_bitrix_id}, но получено {user_id_int}"
+                                        )
+                                    
+                                    # Обновляем локальное хранилище (кеш)
+                                    TELEGRAM_TO_BITRIX_MAPPING[telegram_id] = user_id_int
+                                    
+                                    logger.info(
+                                        f"✅ Синхронизировано из Bitrix24 (исходящий вебхук): "
+                                        f"Telegram ID {telegram_id} → Bitrix24 User ID {user_id_int}"
+                                    )
+                                except (ValueError, TypeError) as e:
+                                    logger.warning(f"Неверный формат Telegram ID: {telegram_id_str}, ошибка: {e}")
+                            else:
+                                logger.debug(f"Пользователь {user_id} обновлен, но Telegram ID не указан в поле {telegram_field_name}")
+                        else:
+                            logger.debug(f"Событие {event} не обрабатывается (не связано с пользователями)")
+                        
+                        # Всегда возвращаем успешный ответ, чтобы Bitrix24 не повторял запрос
+                        return web.json_response({'status': 'ok'}, status=200)
+                        
+                    except Exception as e:
+                        logger.error(f"Ошибка при обработке исходящего вебхука от Bitrix24: {e}", exc_info=True)
+                        logger.error(f"Данные запроса: {await request.text() if hasattr(request, 'text') else 'недоступны'}")
+                        # Возвращаем успешный ответ, чтобы Bitrix24 не повторял запрос
+                        return web.json_response({'status': 'error', 'message': str(e)}, status=200)
+                
                 # Регистрируем маршруты
                 # ВАЖНО: health check должен быть зарегистрирован первым и отвечать сразу
                 aio_app.router.add_get('/', health_check)
@@ -1878,6 +1954,8 @@ def main():
                 aio_app.router.add_get('/api/miniapp/users', miniapp_users_handler)
                 aio_app.router.add_get('/api/miniapp/departments', miniapp_departments_handler)
                 aio_app.router.add_post('/api/miniapp/create-task', miniapp_create_task_handler)
+                # Исходящий вебхук от Bitrix24 для синхронизации Telegram ID
+                aio_app.router.add_post('/api/bitrix/webhook', bitrix_outgoing_webhook_handler)
                 
                 # Инициализируем приложение
                 # Используем on_startup для инициализации Telegram в фоне

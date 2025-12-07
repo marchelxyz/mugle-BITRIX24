@@ -539,17 +539,28 @@ class Bitrix24Client:
             telegram_id_str = str(telegram_id)
             logger.info(f"📝 Попытка сохранить Telegram ID {telegram_id} в поле '{self.telegram_field_name}' для пользователя Bitrix24 {user_id}")
             
-            # Вариант 1: Формат с "fields" (стандартный для Bitrix24 REST API)
+            # Вариант 1: Формат с "id" (строчными) - как в официальном примере от Bitrix24
+            # Формат: {"id": user_id, "fields": {"UF_TELEGRAM_ID": telegram_id}}
+            # Некоторые версии Bitrix24 требуют именно "id" вместо "ID"
+            # Источник: официальный пример от Bitrix24 для обновления профиля сотрудника
+            update_data_v1 = {
+                "id": user_id,
+                "fields": {
+                    self.telegram_field_name: telegram_id_str
+                }
+            }
+            
+            # Вариант 1a: Формат с "ID" (заглавными) - стандартный для Bitrix24 REST API
             # Согласно документации Bitrix24, для обновления пользовательских полей используется формат:
             # {"ID": user_id, "fields": {"FIELD_NAME": "value"}}
-            update_data_v1 = {
+            update_data_v1a = {
                 "ID": user_id,
                 "fields": {
                     self.telegram_field_name: telegram_id_str
                 }
             }
             
-            logger.debug(f"Попытка 1: Формат с 'fields' - {update_data_v1}")
+            logger.debug(f"Попытка 1: Формат с 'id' (строчными) - {update_data_v1}")
             try:
                 result = self._make_request("user.update", update_data_v1)
                 logger.debug(f"Ответ от Bitrix24 (попытка 1): {result}")
@@ -564,7 +575,7 @@ class Bitrix24Client:
                     error_msg = result.get("error", "")
                     error_desc = result.get("error_description", "")
                     error_code = result.get("error_code", "")
-                    logger.warning(f"Ошибка при обновлении (попытка 1): {error_msg} - {error_desc}")
+                    logger.warning(f"Ошибка при обновлении (попытка 1 с 'id'): {error_msg} - {error_desc}")
                     if error_code:
                         logger.warning(f"Код ошибки: {error_code}")
                 else:
@@ -575,27 +586,58 @@ class Bitrix24Client:
                         (isinstance(result_value, bool) and result_value)
                     )
                     if success:
-                        logger.debug(f"Обновление успешно (попытка 1), result: {result_value}")
+                        logger.debug(f"Обновление успешно (попытка 1 с 'id'), result: {result_value}")
                     else:
-                        logger.warning(f"Обновление не подтверждено (попытка 1), result: {result_value}, тип: {type(result_value)}")
+                        logger.warning(f"Обновление не подтверждено (попытка 1 с 'id'), result: {result_value}, тип: {type(result_value)}")
             except Exception as req_error:
-                logger.error(f"Исключение при запросе обновления (попытка 1): {req_error}", exc_info=True)
+                logger.error(f"Исключение при запросе обновления (попытка 1 с 'id'): {req_error}", exc_info=True)
                 success = False
                 result = {"error": str(req_error)}
             
-            # Если первый вариант не сработал, пробуем альтернативный формат
+            # Если первый вариант не сработал, пробуем с "ID" (заглавными)
+            if not success:
+                logger.debug(f"Попытка 1a: Формат с 'ID' (заглавными) - {update_data_v1a}")
+                try:
+                    result = self._make_request("user.update", update_data_v1a)
+                    logger.debug(f"Ответ от Bitrix24 (попытка 1a): {result}")
+                    
+                    if result.get("error"):
+                        success = False
+                        error_msg = result.get("error", "")
+                        error_desc = result.get("error_description", "")
+                        error_code = result.get("error_code", "")
+                        logger.warning(f"Ошибка при обновлении (попытка 1a с 'ID'): {error_msg} - {error_desc}")
+                        if error_code:
+                            logger.warning(f"Код ошибки: {error_code}")
+                    else:
+                        result_value = result.get("result")
+                        success = (
+                            result_value is True or 
+                            (isinstance(result_value, (int, str)) and str(result_value) == str(user_id)) or
+                            (isinstance(result_value, bool) and result_value)
+                        )
+                        if success:
+                            logger.debug(f"Обновление успешно (попытка 1a с 'ID'), result: {result_value}")
+                        else:
+                            logger.warning(f"Обновление не подтверждено (попытка 1a с 'ID'), result: {result_value}, тип: {type(result_value)}")
+                except Exception as req_error:
+                    logger.error(f"Исключение при запросе обновления (попытка 1a с 'ID'): {req_error}", exc_info=True)
+                    success = False
+                    result = {"error": str(req_error)}
+            
+            # Если первые варианты не сработали, пробуем альтернативные форматы
             if not success:
                 error_msg = result.get("error", "")
                 error_desc = result.get("error_description", "")
-                logger.warning(f"Первый вариант не сработал: {error_msg} - {error_desc}")
-                logger.info(f"Пробуем альтернативный формат...")
+                logger.warning(f"Предыдущие варианты не сработали: {error_msg} - {error_desc}")
+                logger.info(f"Пробуем альтернативные форматы...")
                 
-                # Вариант 2: Прямая передача полей (без вложенного "fields")
+                # Вариант 2: Прямая передача полей с "id" (строчными)
                 update_data_v2 = {
-                    "ID": user_id,
+                    "id": user_id,
                     self.telegram_field_name: telegram_id_str
                 }
-                logger.debug(f"Попытка 2: Прямая передача полей - {update_data_v2}")
+                logger.debug(f"Попытка 2: Прямая передача полей с 'id' - {update_data_v2}")
                 try:
                     result = self._make_request("user.update", update_data_v2)
                     logger.debug(f"Ответ от Bitrix24 (попытка 2): {result}")
@@ -614,17 +656,49 @@ class Bitrix24Client:
                     success = False
                     result = {"error": str(req_error)}
                 
-                # Если и второй вариант не сработал, пробуем третий вариант - только поле
+                # Если второй вариант не сработал, пробуем третий вариант - с "ID" (заглавными)
                 if not success:
-                    logger.warning(f"Второй вариант не сработал, пробуем третий вариант...")
+                    logger.warning(f"Попытка 2 не сработала, пробуем вариант 2a с 'ID'...")
+                    update_data_v2a = {
+                        "ID": user_id,
+                        self.telegram_field_name: telegram_id_str
+                    }
+                    logger.debug(f"Попытка 2a: Прямая передача полей с 'ID' - {update_data_v2a}")
+                    try:
+                        result = self._make_request("user.update", update_data_v2a)
+                        logger.debug(f"Ответ от Bitrix24 (попытка 2a): {result}")
+                        if result.get("error"):
+                            success = False
+                            logger.warning(f"Ошибка при обновлении (попытка 2a): {result.get('error')} - {result.get('error_description', '')}")
+                        else:
+                            result_value = result.get("result")
+                            success = (
+                                result_value is True or 
+                                (isinstance(result_value, (int, str)) and str(result_value) == str(user_id)) or
+                                (isinstance(result_value, bool) and result_value)
+                            )
+                    except Exception as req_error:
+                        logger.error(f"Исключение при запросе обновления (попытка 2a): {req_error}", exc_info=True)
+                        success = False
+                        result = {"error": str(req_error)}
+                
+                # Если и третий вариант не сработал, пробуем четвертый вариант - только поле
+                if not success:
+                    logger.warning(f"Предыдущие варианты не сработали, пробуем вариант 3...")
                     # Вариант 3: Только поле в корне запроса (некоторые версии Bitrix24 требуют такой формат)
                     update_data_v3 = {
                         self.telegram_field_name: telegram_id_str
                     }
                     logger.debug(f"Попытка 3: Только поле - {update_data_v3}")
                     try:
-                        result = self._make_request("user.update", {"ID": user_id, **update_data_v3})
-                        logger.debug(f"Ответ от Bitrix24 (попытка 3): {result}")
+                        # Пробуем с "id" (строчными)
+                        result = self._make_request("user.update", {"id": user_id, **update_data_v3})
+                        logger.debug(f"Ответ от Bitrix24 (попытка 3 с 'id'): {result}")
+                        if result.get("error"):
+                            # Пробуем с "ID" (заглавными)
+                            result = self._make_request("user.update", {"ID": user_id, **update_data_v3})
+                            logger.debug(f"Ответ от Bitrix24 (попытка 3 с 'ID'): {result}")
+                        
                         if result.get("error"):
                             success = False
                             logger.warning(f"Ошибка при обновлении (попытка 3): {result.get('error')} - {result.get('error_description', '')}")

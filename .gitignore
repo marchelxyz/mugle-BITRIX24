@@ -8,3 +8,6 @@ venv/
 env/
 *.log
 .DS_Store
+*.db
+*.sqlite
+*.sqlite3
