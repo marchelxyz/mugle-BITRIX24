@@ -189,6 +189,7 @@ def get_bitrix_user_id_by_telegram_id(telegram_id: int) -> Optional[int]:
 
 def set_telegram_to_bitrix_mapping(telegram_id: int, bitrix_user_id: int) -> bool:
     """Сохранение маппинга Telegram ID -> Bitrix24 User ID"""
+    global _connection_pool
     if _connection_pool is None:
         logger.warning(f"⚠️ Пул соединений PostgreSQL не инициализирован. Попытка переинициализации...")
         init_connection_pool()
@@ -212,7 +213,6 @@ def set_telegram_to_bitrix_mapping(telegram_id: int, bitrix_user_id: int) -> boo
         logger.error(f"❌ Ошибка при получении соединения с PostgreSQL: {e}", exc_info=True)
         # Пытаемся переинициализировать пул
         logger.info("Попытка переинициализации пула соединений...")
-        global _connection_pool
         _connection_pool = None
         init_connection_pool()
         return False
@@ -220,7 +220,6 @@ def set_telegram_to_bitrix_mapping(telegram_id: int, bitrix_user_id: int) -> boo
         logger.error(f"❌ Ошибка подключения к PostgreSQL: {e}", exc_info=True)
         # Пытаемся переинициализировать пул
         logger.info("Попытка переинициализации пула соединений после операционной ошибки...")
-        global _connection_pool
         _connection_pool = None
         init_connection_pool()
         return False
