@@ -24,6 +24,12 @@ from telegram.ext import (
 )
 from bitrix24_client import Bitrix24Client
 try:
+    import database
+    DATABASE_AVAILABLE = True
+except ImportError:
+    DATABASE_AVAILABLE = False
+    logger.warning("⚠️ Модуль database не найден. PostgreSQL функции будут недоступны.")
+try:
     from aiohttp import web
     AIOHTTP_AVAILABLE = True
 except ImportError:
@@ -50,49 +56,76 @@ bitrix_client = Bitrix24Client(
     telegram_field_name=os.getenv("BITRIX24_TELEGRAM_FIELD_NAME", "UF_USR_TELEGRAM")
 )
 
-# Загружаем существующие связи из Bitrix24 при старте
-# Связи хранятся в памяти и обновляются через исходящий вебхук от Bitrix24
-try:
-    logger.info("Загрузка связей из Bitrix24...")
-    loaded_mappings = bitrix_client.load_all_telegram_mappings()
-    if loaded_mappings:
-        TELEGRAM_TO_BITRIX_MAPPING.update(loaded_mappings)
-        logger.info(f"✅ Загружено {len(loaded_mappings)} связей из Bitrix24")
-    else:
-        logger.info("ℹ️ В Bitrix24 пока нет сохраненных связей. Используйте команду /link для связывания.")
-        logger.info("💡 Рекомендуется настроить исходящий вебхук в Bitrix24 для автоматической синхронизации")
-except Exception as e:
-    logger.error(f"Ошибка при загрузке связей из Bitrix24: {e}", exc_info=True)
-    logger.warning("Бот будет работать, но связи нужно будет устанавливать заново")
-    logger.info("💡 Убедитесь, что входящий вебхук настроен правильно и имеет права на чтение пользователей")
+# Инициализация PostgreSQL базы данных
+if DATABASE_AVAILABLE:
+    try:
+        database.init_connection_pool()
+        database.init_database()
+        logger.info("✅ PostgreSQL база данных успешно инициализирована")
+        
+        # Загружаем маппинги thread_to_department из БД
+        db_thread_mappings = database.get_all_thread_to_department_mappings()
+        if db_thread_mappings:
+            THREAD_TO_DEPARTMENT_MAPPING.update(db_thread_mappings)
+            logger.info(f"✅ Загружено {len(db_thread_mappings)} маппингов thread_id -> department_id из БД")
+    except Exception as e:
+        logger.error(f"❌ Ошибка при инициализации PostgreSQL: {e}", exc_info=True)
+        logger.warning("⚠️ Бот будет работать с локальным хранилищем (в памяти)")
+        DATABASE_AVAILABLE = False
+else:
+    logger.warning("⚠️ PostgreSQL недоступен. Используется локальное хранилище (в памяти)")
+
+# Загружаем существующие связи из Bitrix24 при старте (для миграции/синхронизации)
+# Теперь связи хранятся в PostgreSQL, но можем загрузить из Bitrix24 для миграции
+if DATABASE_AVAILABLE:
+    try:
+        logger.info("Загрузка связей из Bitrix24 для синхронизации с БД...")
+        loaded_mappings = bitrix_client.load_all_telegram_mappings()
+        if loaded_mappings:
+            # Сохраняем в БД вместо памяти
+            for telegram_id, bitrix_id in loaded_mappings.items():
+                database.set_telegram_to_bitrix_mapping(telegram_id, bitrix_id)
+            logger.info(f"✅ Синхронизировано {len(loaded_mappings)} связей из Bitrix24 в PostgreSQL")
+        else:
+            logger.info("ℹ️ В Bitrix24 пока нет сохраненных связей. Используйте команду /link для связывания.")
+    except Exception as e:
+        logger.error(f"Ошибка при синхронизации связей из Bitrix24: {e}", exc_info=True)
+        logger.warning("Бот будет работать, но связи нужно будет устанавливать заново")
 
 # Состояния диалога
 WAITING_FOR_RESPONSIBLES, WAITING_FOR_DEADLINE, WAITING_FOR_DESCRIPTION, WAITING_FOR_FILES = range(4)
 
 # Хранилище соответствий Telegram User ID -> Bitrix24 User ID
-# В продакшене это должно быть в базе данных
+# Используется как fallback если PostgreSQL недоступен
 TELEGRAM_TO_BITRIX_MAPPING: Dict[int, int] = {}
 
 # Хранилище соответствий Telegram username -> Bitrix24 User ID (для поиска по имени)
+# Используется как fallback если PostgreSQL недоступен
 USERNAME_TO_BITRIX_MAPPING: Dict[str, int] = {}
 
 # Маппинг Telegram thread_id -> Bitrix24 Department ID
-# Формат: {thread_id: department_id}
-# thread_id - это ID темы в супергруппе Telegram
-# department_id - это ID подразделения в Bitrix24
-# Можно настроить через переменную окружения THREAD_DEPARTMENT_MAPPING в формате JSON:
+# Используется как fallback если PostgreSQL недоступен
+# Можно также настроить через переменную окружения THREAD_DEPARTMENT_MAPPING в формате JSON:
 # {"123": 5, "456": 10} где 123 и 456 - thread_id, 5 и 10 - department_id
 THREAD_TO_DEPARTMENT_MAPPING: Dict[int, int] = {}
 
-# Загружаем маппинг из переменной окружения при старте
+# Загружаем маппинг из переменной окружения при старте (для миграции/инициализации)
 try:
     import json
     thread_mapping_str = os.getenv("THREAD_DEPARTMENT_MAPPING")
     if thread_mapping_str:
         thread_mapping_dict = json.loads(thread_mapping_str)
         # Преобразуем ключи в int (Telegram thread_id всегда int)
-        THREAD_TO_DEPARTMENT_MAPPING = {int(k): int(v) for k, v in thread_mapping_dict.items()}
-        logger.info(f"✅ Загружено {len(THREAD_TO_DEPARTMENT_MAPPING)} маппингов thread_id -> department_id")
+        thread_mappings = {int(k): int(v) for k, v in thread_mapping_dict.items()}
+        THREAD_TO_DEPARTMENT_MAPPING.update(thread_mappings)
+        
+        # Сохраняем в БД если доступна
+        if DATABASE_AVAILABLE:
+            for thread_id, dept_id in thread_mappings.items():
+                database.set_thread_to_department_mapping(thread_id, dept_id)
+            logger.info(f"✅ Загружено и сохранено в БД {len(thread_mappings)} маппингов thread_id -> department_id из переменной окружения")
+        else:
+            logger.info(f"✅ Загружено {len(thread_mappings)} маппингов thread_id -> department_id (в память)")
     else:
         logger.info("ℹ️ THREAD_DEPARTMENT_MAPPING не установлен. Автоматический выбор отдела по теме отключен.")
 except Exception as e:
@@ -235,8 +268,9 @@ def get_bitrix_user_id_by_telegram_id(telegram_id: int) -> Optional[int]:
     """
     Получение Bitrix24 User ID по Telegram ID
     Проверяет в следующем порядке:
-    1. Локальное хранилище (память) - кеш из исходящего вебхука
-    2. Bitrix24 API - прямой запрос к API
+    1. PostgreSQL база данных (если доступна)
+    2. Локальное хранилище (память) - fallback
+    3. Bitrix24 API - прямой запрос к API
     
     Args:
         telegram_id: Telegram User ID
@@ -244,7 +278,18 @@ def get_bitrix_user_id_by_telegram_id(telegram_id: int) -> Optional[int]:
     Returns:
         Bitrix24 User ID или None
     """
-    # Сначала проверяем локальное хранилище (кеш)
+    # Сначала проверяем PostgreSQL БД
+    if DATABASE_AVAILABLE:
+        try:
+            bitrix_id = database.get_bitrix_user_id_by_telegram_id(telegram_id)
+            if bitrix_id:
+                # Обновляем кеш в памяти для быстрого доступа
+                TELEGRAM_TO_BITRIX_MAPPING[telegram_id] = bitrix_id
+                return bitrix_id
+        except Exception as e:
+            logger.debug(f"Ошибка при запросе к БД для telegram_id {telegram_id}: {e}")
+    
+    # Если не найдено в БД, проверяем локальное хранилище (кеш)
     bitrix_id = TELEGRAM_TO_BITRIX_MAPPING.get(telegram_id)
     if bitrix_id:
         return bitrix_id
@@ -255,7 +300,9 @@ def get_bitrix_user_id_by_telegram_id(telegram_id: int) -> Optional[int]:
         if user_info and user_info.get("ID"):
             try:
                 bitrix_id = int(user_info.get("ID"))
-                # Сохраняем в локальное хранилище для быстрого доступа
+                # Сохраняем в БД и локальное хранилище
+                if DATABASE_AVAILABLE:
+                    database.set_telegram_to_bitrix_mapping(telegram_id, bitrix_id)
                 TELEGRAM_TO_BITRIX_MAPPING[telegram_id] = bitrix_id
                 return bitrix_id
             except (ValueError, TypeError):
@@ -395,8 +442,14 @@ async def create_task_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     department_id = None
     if update.message.message_thread_id:
         thread_id = update.message.message_thread_id
-        # Автоматически определяем отдел на основе thread_id
-        department_id = THREAD_TO_DEPARTMENT_MAPPING.get(thread_id)
+        # Автоматически определяем отдел на основе thread_id (из БД или памяти)
+        if DATABASE_AVAILABLE:
+            try:
+                department_id = database.get_department_id_by_thread_id(thread_id)
+            except Exception:
+                department_id = THREAD_TO_DEPARTMENT_MAPPING.get(thread_id)
+        else:
+            department_id = THREAD_TO_DEPARTMENT_MAPPING.get(thread_id)
         if department_id:
             logger.info(f"Автоматически определен отдел {department_id} для thread_id {thread_id}")
     
@@ -562,7 +615,9 @@ async def link_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         success = bitrix_client.update_user_telegram_id(bitrix_user_id, telegram_user_id)
         
         if success:
-            # Сохраняем в локальное хранилище для быстрого доступа
+            # Сохраняем в PostgreSQL БД и локальное хранилище для быстрого доступа
+            if DATABASE_AVAILABLE:
+                database.set_telegram_to_bitrix_mapping(telegram_user_id, bitrix_user_id)
             TELEGRAM_TO_BITRIX_MAPPING[telegram_user_id] = bitrix_user_id
             
             user_name = f"{user_info.get('NAME', '')} {user_info.get('LAST_NAME', '')}".strip()
@@ -694,7 +749,9 @@ async def link_username(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
-        # Сохраняем в локальное хранилище (username mapping хранится только в памяти)
+        # Сохраняем в PostgreSQL БД и локальное хранилище
+        if DATABASE_AVAILABLE:
+            database.set_username_to_bitrix_mapping(telegram_username, bitrix_user_id)
         USERNAME_TO_BITRIX_MAPPING[telegram_username] = bitrix_user_id
         
         user_name = f"{user_info.get('NAME', '')} {user_info.get('LAST_NAME', '')}".strip()
@@ -730,8 +787,15 @@ async def start_task_creation(update: Update, context: ContextTypes.DEFAULT_TYPE
     thread_id = None
     if update.message.message_thread_id:
         thread_id = update.message.message_thread_id
-        # Автоматически определяем отдел на основе thread_id
-        department_id = THREAD_TO_DEPARTMENT_MAPPING.get(thread_id)
+        # Автоматически определяем отдел на основе thread_id (из БД или памяти)
+        department_id = None
+        if DATABASE_AVAILABLE:
+            try:
+                department_id = database.get_department_id_by_thread_id(thread_id)
+            except Exception:
+                department_id = THREAD_TO_DEPARTMENT_MAPPING.get(thread_id)
+        else:
+            department_id = THREAD_TO_DEPARTMENT_MAPPING.get(thread_id)
         if department_id:
             context.user_data['department_id'] = department_id
             logger.info(f"Автоматически определен отдел {department_id} для thread_id {thread_id}")
@@ -1079,8 +1143,14 @@ async def handle_reply_with_mention(update: Update, context: ContextTypes.DEFAUL
     department_id = None
     if message.message_thread_id:
         thread_id = message.message_thread_id
-        # Автоматически определяем отдел на основе thread_id
-        department_id = THREAD_TO_DEPARTMENT_MAPPING.get(thread_id)
+        # Автоматически определяем отдел на основе thread_id (из БД или памяти)
+        if DATABASE_AVAILABLE:
+            try:
+                department_id = database.get_department_id_by_thread_id(thread_id)
+            except Exception:
+                department_id = THREAD_TO_DEPARTMENT_MAPPING.get(thread_id)
+        else:
+            department_id = THREAD_TO_DEPARTMENT_MAPPING.get(thread_id)
         if department_id:
             logger.info(f"Автоматически определен отдел {department_id} для thread_id {thread_id}")
     
@@ -1952,15 +2022,25 @@ def main():
                                     telegram_id = int(telegram_id_str)
                                     user_id_int = int(user_id)
                                     
-                                    # Проверяем, не изменилась ли связь в кеше
-                                    existing_bitrix_id = TELEGRAM_TO_BITRIX_MAPPING.get(telegram_id)
+                                    # Проверяем, не изменилась ли связь в кеше/БД
+                                    existing_bitrix_id = None
+                                    if DATABASE_AVAILABLE:
+                                        try:
+                                            existing_bitrix_id = database.get_bitrix_user_id_by_telegram_id(telegram_id)
+                                        except Exception:
+                                            existing_bitrix_id = TELEGRAM_TO_BITRIX_MAPPING.get(telegram_id)
+                                    else:
+                                        existing_bitrix_id = TELEGRAM_TO_BITRIX_MAPPING.get(telegram_id)
+                                    
                                     if existing_bitrix_id and existing_bitrix_id != user_id_int:
                                         logger.warning(
                                             f"⚠️ Конфликт связей: Telegram ID {telegram_id} уже связан с "
                                             f"Bitrix24 User ID {existing_bitrix_id}, но получено {user_id_int}"
                                         )
                                     
-                                    # Обновляем локальное хранилище (кеш)
+                                    # Обновляем БД и локальное хранилище (кеш)
+                                    if DATABASE_AVAILABLE:
+                                        database.set_telegram_to_bitrix_mapping(telegram_id, user_id_int)
                                     TELEGRAM_TO_BITRIX_MAPPING[telegram_id] = user_id_int
                                     
                                     logger.info(
