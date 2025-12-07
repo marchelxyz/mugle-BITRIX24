@@ -415,91 +415,6 @@ class Bitrix24Client:
             # Это позволит боту продолжать работу
             return True
     
-    def update_user_telegram_id_via_crm(self, user_id: int, telegram_id: int) -> bool:
-        """
-        Альтернативный метод: Сохранение Telegram ID через CRM контакт пользователя
-        
-        В Bitrix24 пользователи могут быть связаны с CRM контактами.
-        Этот метод пытается найти связанный контакт и сохранить Telegram ID в него.
-        
-        Args:
-            user_id: ID пользователя в Bitrix24
-            telegram_id: Telegram User ID
-            
-        Returns:
-            True если обновление прошло успешно, False в случае ошибки
-        """
-        try:
-            # Сначала получаем информацию о пользователе
-            user_info = self.get_user_by_id(user_id)
-            if not user_info:
-                logger.warning(f"Пользователь {user_id} не найден")
-                return False
-            
-            # Ищем связанный CRM контакт через email или телефон
-            email = user_info.get("EMAIL", "")
-            phone = user_info.get("PERSONAL_MOBILE", "") or user_info.get("WORK_PHONE", "")
-            
-            contact_id = None
-            
-            # Ищем контакт по email
-            if email:
-                try:
-                    result = self._make_request("crm.contact.list", {
-                        "filter": {"EMAIL": email},
-                        "select": ["ID", "UF_CRM_TELEGRAM_ID"]  # Предполагаем, что поле называется так
-                    })
-                    contacts = result.get("result", {}).get("contacts", [])
-                    if contacts:
-                        contact_id = contacts[0].get("ID")
-                        logger.info(f"Найден CRM контакт {contact_id} по email для пользователя {user_id}")
-                except Exception as e:
-                    logger.debug(f"Ошибка при поиске контакта по email: {e}")
-            
-            # Если не нашли по email, ищем по телефону
-            if not contact_id and phone:
-                try:
-                    result = self._make_request("crm.contact.list", {
-                        "filter": {"PHONE": phone},
-                        "select": ["ID", "UF_CRM_TELEGRAM_ID"]
-                    })
-                    contacts = result.get("result", {}).get("contacts", [])
-                    if contacts:
-                        contact_id = contacts[0].get("ID")
-                        logger.info(f"Найден CRM контакт {contact_id} по телефону для пользователя {user_id}")
-                except Exception as e:
-                    logger.debug(f"Ошибка при поиске контакта по телефону: {e}")
-            
-            if not contact_id:
-                logger.warning(f"Не найден CRM контакт для пользователя {user_id}")
-                return False
-            
-            # Создаем или получаем пользовательское поле для Telegram ID в контактах
-            telegram_field_name = "UF_CRM_TELEGRAM_ID"
-            
-            # Пробуем обновить контакт
-            try:
-                update_result = self._make_request("crm.contact.update", {
-                    "id": contact_id,
-                    "fields": {
-                        telegram_field_name: str(telegram_id)
-                    }
-                })
-                
-                if update_result.get("result"):
-                    logger.info(f"✅ Telegram ID {telegram_id} сохранен в CRM контакт {contact_id} для пользователя {user_id}")
-                    return True
-                else:
-                    logger.warning(f"Не удалось обновить CRM контакт: {update_result.get('error_description', 'Неизвестная ошибка')}")
-                    return False
-            except Exception as e:
-                logger.error(f"Ошибка при обновлении CRM контакта: {e}", exc_info=True)
-                return False
-                
-        except Exception as e:
-            logger.error(f"Ошибка при сохранении Telegram ID через CRM: {e}", exc_info=True)
-            return False
-    
     def update_user_telegram_id_via_standard_field(self, user_id: int, telegram_id: int) -> bool:
         """
         Альтернативный метод: Сохранение Telegram ID в стандартное поле пользователя
@@ -562,8 +477,7 @@ class Bitrix24Client:
         
         Пробует несколько методов сохранения в следующем порядке:
         1. Через пользовательское поле (user.update) - основной метод
-        2. Через CRM контакт (если пользователь связан с контактом)
-        3. Через стандартное поле пользователя (PERSONAL_NOTES) - fallback
+        2. Через стандартное поле пользователя (PERSONAL_NOTES) - fallback
         
         Args:
             user_id: ID пользователя в Bitrix24
@@ -581,18 +495,9 @@ class Bitrix24Client:
             logger.info(f"✅ Telegram ID успешно сохранен через пользовательское поле")
             return True
         
-        logger.warning(f"⚠️ Сохранение через пользовательское поле не удалось, пробуем альтернативные методы...")
+        logger.warning(f"⚠️ Сохранение через пользовательское поле не удалось, пробуем альтернативный метод...")
         
-        # Метод 2: Попытка сохранить через CRM контакт
-        try:
-            success_via_crm = self.update_user_telegram_id_via_crm(user_id, telegram_id)
-            if success_via_crm:
-                logger.info(f"✅ Telegram ID успешно сохранен через CRM контакт")
-                return True
-        except Exception as crm_error:
-            logger.debug(f"Метод сохранения через CRM недоступен: {crm_error}")
-        
-        # Метод 3: Попытка сохранить через стандартное поле (fallback)
+        # Метод 2: Попытка сохранить через стандартное поле (fallback)
         logger.info(f"Пробуем сохранить через стандартное поле PERSONAL_NOTES...")
         success_via_standard = self.update_user_telegram_id_via_standard_field(user_id, telegram_id)
         if success_via_standard:
