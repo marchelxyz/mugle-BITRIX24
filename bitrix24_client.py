@@ -214,9 +214,9 @@ class Bitrix24Client:
         try:
             # В Битрикс24 REST API метод user.get возвращает всех пользователей
             # Используем фильтр для активных пользователей, если нужно
-            # Явно запрашиваем пользовательское поле с Telegram ID
+            # Запрашиваем все необходимые поля: ID, NAME, LAST_NAME, EMAIL, LOGIN и пользовательское поле с Telegram ID
             params = {
-                "SELECT": [self.telegram_field_name]  # Запрашиваем поле с Telegram ID
+                "SELECT": ["ID", "NAME", "LAST_NAME", "EMAIL", "LOGIN", self.telegram_field_name]  # Запрашиваем все необходимые поля
             }
             if active_only:
                 params["FILTER"] = {"ACTIVE": "Y"}
@@ -226,12 +226,26 @@ class Bitrix24Client:
             result = self._make_request("user.get", params)
             users = result.get("result", [])
             
-            # Если результат - список, возвращаем его
+            # Фильтруем валидных пользователей
+            valid_users = []
             if isinstance(users, list):
-                return users
+                for user in users:
+                    # Пропускаем пустые списки и невалидные элементы
+                    if isinstance(user, dict) and user.get("ID"):
+                        # Проверяем, что это не пустой словарь
+                        if user:
+                            valid_users.append(user)
+                    elif isinstance(user, list):
+                        # Пропускаем пустые списки
+                        logger.debug(f"Пропущен пустой список в результате user.get")
+                        continue
+                    else:
+                        logger.debug(f"Пропущен невалидный элемент пользователя: {type(user)}, значение: {user}")
+                        continue
+                return valid_users
             
             # Если результат - словарь с одним пользователем, оборачиваем в список
-            if isinstance(users, dict):
+            if isinstance(users, dict) and users.get("ID"):
                 return [users]
             
             return []
@@ -244,12 +258,29 @@ class Bitrix24Client:
                     params["FILTER"] = {"ACTIVE": "Y"}
                 result = self._make_request("user.get", params)
                 users = result.get("result", [])
+                
+                # Фильтруем валидных пользователей
+                valid_users = []
                 if isinstance(users, list):
-                    return users
-                if isinstance(users, dict):
+                    for user in users:
+                        # Пропускаем пустые списки и невалидные элементы
+                        if isinstance(user, dict) and user.get("ID"):
+                            if user:
+                                valid_users.append(user)
+                        elif isinstance(user, list):
+                            logger.debug(f"Пропущен пустой список в результате user.get (fallback)")
+                            continue
+                        else:
+                            logger.debug(f"Пропущен невалидный элемент пользователя (fallback): {type(user)}")
+                            continue
+                    return valid_users
+                
+                if isinstance(users, dict) and users.get("ID"):
                     return [users]
+                
                 return []
-            except Exception:
+            except Exception as fallback_error:
+                logger.error(f"Ошибка при fallback запросе пользователей: {fallback_error}")
                 return []
     
     def get_user_id_by_telegram_username(self, telegram_username: str) -> Optional[int]:

@@ -1689,26 +1689,46 @@ def main():
                         for user in users:
                             # Проверяем, что user - это словарь
                             if not isinstance(user, dict):
-                                logger.warning(f"Пропущен элемент пользователя (не словарь): {type(user)}, значение: {user}")
+                                logger.debug(f"Пропущен элемент пользователя (не словарь): {type(user)}, значение: {user}")
                                 continue
                             
-                            name = f"{user.get('NAME', '')} {user.get('LAST_NAME', '')}".strip()
                             user_id = user.get('ID')
+                            # Пропускаем пользователей без ID
+                            if not user_id:
+                                logger.debug(f"Пропущен пользователь без ID: {user}")
+                                continue
                             
-                            # Пропускаем пользователей без имени или ID
-                            if name and user_id:
-                                try:
-                                    users_list.append({
-                                        'id': int(user_id),
-                                        'name': name
-                                    })
-                                except (ValueError, TypeError) as conv_error:
-                                    logger.warning(f"Ошибка преобразования ID пользователя {user_id}: {conv_error}")
-                                    continue
+                            # Формируем имя пользователя
+                            name = f"{user.get('NAME', '')} {user.get('LAST_NAME', '')}".strip()
+                            
+                            # Если имени нет, используем альтернативные варианты
+                            if not name:
+                                # Пробуем использовать EMAIL
+                                email = user.get('EMAIL', '').strip()
+                                if email:
+                                    name = email
+                                else:
+                                    # Пробуем использовать LOGIN
+                                    login = user.get('LOGIN', '').strip()
+                                    if login:
+                                        name = login
+                                    else:
+                                        # В крайнем случае используем ID
+                                        name = f"Пользователь {user_id}"
+                            
+                            try:
+                                users_list.append({
+                                    'id': int(user_id),
+                                    'name': name
+                                })
+                            except (ValueError, TypeError) as conv_error:
+                                logger.warning(f"Ошибка преобразования ID пользователя {user_id}: {conv_error}")
+                                continue
                         
                         # Сортируем по имени для удобства
-                        users_list.sort(key=lambda x: x['name'])
+                        users_list.sort(key=lambda x: x['name'].lower())
                         
+                        logger.info(f"✅ Загружено {len(users_list)} пользователей для мини-приложения")
                         return web.json_response(users_list)
                     except Exception as e:
                         logger.error(f"Ошибка при получении списка пользователей: {e}", exc_info=True)
