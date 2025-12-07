@@ -1677,16 +1677,32 @@ def main():
                         # Получаем всех активных пользователей из Bitrix24
                         users = bitrix_client.get_all_users(active_only=True)
                         
+                        # Проверяем, что users - это список
+                        if not isinstance(users, list):
+                            logger.error(f"get_all_users вернул не список: {type(users)}, значение: {users}")
+                            return web.json_response({'error': 'Неверный формат данных от Bitrix24'}, status=500)
+                        
                         # Форматируем список пользователей
                         users_list = []
                         for user in users:
+                            # Проверяем, что user - это словарь
+                            if not isinstance(user, dict):
+                                logger.warning(f"Пропущен элемент пользователя (не словарь): {type(user)}, значение: {user}")
+                                continue
+                            
                             name = f"{user.get('NAME', '')} {user.get('LAST_NAME', '')}".strip()
-                            # Пропускаем пользователей без имени
-                            if name:
-                                users_list.append({
-                                    'id': int(user.get('ID')),
-                                    'name': name
-                                })
+                            user_id = user.get('ID')
+                            
+                            # Пропускаем пользователей без имени или ID
+                            if name and user_id:
+                                try:
+                                    users_list.append({
+                                        'id': int(user_id),
+                                        'name': name
+                                    })
+                                except (ValueError, TypeError) as conv_error:
+                                    logger.warning(f"Ошибка преобразования ID пользователя {user_id}: {conv_error}")
+                                    continue
                         
                         # Сортируем по имени для удобства
                         users_list.sort(key=lambda x: x['name'])
