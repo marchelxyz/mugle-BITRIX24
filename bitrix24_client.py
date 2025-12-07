@@ -195,15 +195,10 @@ class Bitrix24Client:
                         error_code = result.get("error", "UNKNOWN")
                         error_desc = result.get("error_description", "")
                         logger.warning(f"Ошибка API при получении пользователя {user_id} (формат ID: {user_id_format}): {error_code} - {error_desc}")
-                        logger.debug(f"Полный ответ API: {result}")
                         continue
-                    
-                    # Логируем полный ответ для отладки
-                    logger.debug(f"Ответ API для пользователя {user_id} (формат ID: {user_id_format}): {result}")
                     
                     if result.get("result"):
                         result_data = result["result"]
-                        logger.debug(f"Данные результата для пользователя {user_id}: тип={type(result_data)}, значение={result_data}")
                         
                         # Обрабатываем список результатов
                         if isinstance(result_data, list):
@@ -252,15 +247,10 @@ class Bitrix24Client:
                         error_code = result.get("error", "UNKNOWN")
                         error_desc = result.get("error_description", "")
                         logger.warning(f"Ошибка API при получении пользователя {user_id} без SELECT (формат ID: {user_id_format}): {error_code} - {error_desc}")
-                        logger.debug(f"Полный ответ API: {result}")
                         continue
-                    
-                    # Логируем полный ответ для отладки
-                    logger.debug(f"Ответ API для пользователя {user_id} без SELECT (формат ID: {user_id_format}): {result}")
                     
                     if result.get("result"):
                         result_data = result["result"]
-                        logger.debug(f"Данные результата для пользователя {user_id} без SELECT: тип={type(result_data)}, значение={result_data}")
                         
                         # Обрабатываем список результатов
                         if isinstance(result_data, list):
@@ -298,32 +288,9 @@ class Bitrix24Client:
                     logger.debug(f"Ошибка при запросе без SELECT (формат ID: {user_id_format}): {no_select_error}")
                     continue
             
-            # Если ни один формат не сработал, пробуем альтернативный способ - поиск среди всех пользователей
-            logger.info(f"Прямой запрос не сработал, пробуем найти пользователя {user_id} среди всех пользователей...")
-            try:
-                all_users = self.get_all_users(active_only=False)  # Получаем всех пользователей, включая неактивных
-                for user in all_users:
-                    user_id_from_api = user.get("ID")
-                    # Сравниваем ID в разных форматах
-                    if (user_id_from_api and 
-                        (str(user_id_from_api) == str(user_id) or 
-                         int(user_id_from_api) == int(user_id))):
-                        logger.info(f"✅ Пользователь {user_id} найден через поиск среди всех пользователей")
-                        # Убеждаемся, что ID установлен
-                        if not user.get("ID"):
-                            user["ID"] = str(user_id)
-                        return user
-            except Exception as search_error:
-                logger.debug(f"Ошибка при поиске пользователя среди всех пользователей: {search_error}")
-            
-            # Если и это не помогло
-            logger.warning(f"❌ Пользователь с ID {user_id} не найден в Bitrix24 после попыток с разными форматами ID и поиска среди всех пользователей")
+            # Если ни один формат не сработал
+            logger.warning(f"❌ Пользователь с ID {user_id} не найден в Bitrix24 после попыток с разными форматами ID")
             logger.debug(f"Были испробованы форматы ID: {id_formats}")
-            logger.info(f"💡 Возможные причины:")
-            logger.info(f"   1. Пользователь с ID {user_id} не существует в Bitrix24")
-            logger.info(f"   2. ID в URL профиля отличается от ID в REST API")
-            logger.info(f"   3. Вебхук не имеет прав на чтение этого пользователя")
-            logger.info(f"   4. Пользователь удален или неактивен")
             
         except Exception as e:
             logger.error(f"Ошибка при получении пользователя {user_id}: {e}", exc_info=True)
