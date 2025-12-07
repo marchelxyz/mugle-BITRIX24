@@ -544,26 +544,30 @@ async def link_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"Поиск пользователя Bitrix24 с ID {bitrix_user_id} для команды /link от пользователя Telegram {telegram_user_id}")
         user_info = bitrix_client.get_user_by_id(bitrix_user_id)
         
-        # Проверяем наличие user_info (ID теперь всегда добавляется в get_user_by_id)
+        # Проверяем наличие user_info
         if not user_info:
             logger.warning(f"Пользователь Bitrix24 с ID {bitrix_user_id} не найден при выполнении команды /link")
             logger.debug(f"user_info: {user_info}")
-        elif not user_info.get("ID"):
-            # Если user_info есть, но ID нет - это неожиданно, но продолжаем работу
-            logger.warning(f"Пользователь Bitrix24 найден, но ID отсутствует в результате. user_info: {user_info}")
-            # Добавляем ID из запроса для совместимости
-            user_info["ID"] = str(bitrix_user_id)
             await update.message.reply_text(
                 f"❌ Пользователь с ID {bitrix_user_id} не найден в Битрикс24.\n\n"
                 f"Возможные причины:\n"
                 f"1. Пользователь с таким ID не существует\n"
                 f"2. Вебхук не имеет прав на чтение пользователей (user.get)\n"
-                f"3. Проблемы с подключением к Bitrix24\n\n"
+                f"3. Проблемы с подключением к Bitrix24\n"
+                f"4. ID в URL профиля может отличаться от ID в REST API\n\n"
                 f"💡 Проверьте:\n"
-                f"- Правильность ID пользователя (можно найти в URL профиля в Bitrix24)\n"
-                f"- Права вебхука в Bitrix24: Настройки → Разработчикам → Входящий вебхук"
+                f"- Правильность ID пользователя\n"
+                f"- Права вебхука в Bitrix24: Настройки → Разработчикам → Входящий вебхук\n"
+                f"- Попробуйте найти пользователя через поиск в Bitrix24 и используйте ID из REST API\n\n"
+                f"💡 Альтернатива: Попробуйте использовать команду /search для поиска пользователя по имени"
             )
             return
+        
+        # Проверяем наличие ID в user_info
+        if not user_info.get("ID"):
+            # Если user_info есть, но ID нет - добавляем ID из запроса
+            logger.warning(f"Пользователь Bitrix24 найден, но ID отсутствует в результате. user_info: {user_info}")
+            user_info["ID"] = str(bitrix_user_id)
         
         # Сохраняем Telegram ID в Bitrix24
         success = bitrix_client.update_user_telegram_id(bitrix_user_id, telegram_user_id)
@@ -579,11 +583,15 @@ async def link_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if updated_user_info:
                 saved_telegram_id = updated_user_info.get(bitrix_client.telegram_field_name)
             
+            # Безопасно получаем имя пользователя
+            user_name = user_info.get('NAME', '')
+            user_last_name = user_info.get('LAST_NAME', '')
+            user_display_name = f"{user_name} {user_last_name}".strip() or f"ID: {bitrix_user_id}"
+            
             response_text = (
                 f"✅ Связь установлена и сохранена в Bitrix24:\n"
                 f"Ваш Telegram аккаунт (ID: {telegram_user_id}) → "
-                f"{user_info.get('NAME', '')} {user_info.get('LAST_NAME', '')} "
-                f"(ID: {bitrix_user_id})\n\n"
+                f"{user_display_name} (ID: {bitrix_user_id})\n\n"
             )
             
             if saved_telegram_id:
@@ -602,10 +610,15 @@ async def link_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             # Если не удалось сохранить в Bitrix24, сохраняем только локально
             TELEGRAM_TO_BITRIX_MAPPING[telegram_user_id] = bitrix_user_id
+            
+            # Безопасно получаем имя пользователя
+            user_name = user_info.get('NAME', '') if user_info else ''
+            user_last_name = user_info.get('LAST_NAME', '') if user_info else ''
+            user_display_name = f"{user_name} {user_last_name}".strip() or f"ID: {bitrix_user_id}"
+            
             await update.message.reply_text(
                 f"⚠️ Связь установлена локально:\n"
-                f"Ваш Telegram аккаунт → {user_info.get('NAME', '')} {user_info.get('LAST_NAME', '')} "
-                f"(ID: {bitrix_user_id})\n\n"
+                f"Ваш Telegram аккаунт → {user_display_name} (ID: {bitrix_user_id})\n\n"
                 f"❌ Не удалось сохранить в Bitrix24.\n\n"
                 f"Возможные причины:\n"
                 f"1. Поле '{bitrix_client.telegram_field_name}' не существует в Bitrix24\n"
