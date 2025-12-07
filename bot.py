@@ -68,6 +68,27 @@ try:
         logger.info(f"✅ Восстановлено {len(loaded_mappings)} связей из базы данных")
     else:
         logger.info("ℹ️ В базе данных пока нет сохраненных связей. Используйте команду /link для связывания.")
+        
+        # Пытаемся загрузить связи из Bitrix24 для синхронизации (если есть)
+        try:
+            logger.info("Попытка синхронизации связей из Bitrix24...")
+            bitrix_mappings = bitrix_client.load_all_telegram_mappings()
+            if bitrix_mappings:
+                synced_count = 0
+                for telegram_id, bitrix_id in bitrix_mappings.items():
+                    # Сохраняем в БД
+                    if database.save_telegram_mapping(telegram_id, bitrix_id):
+                        synced_count += 1
+                        TELEGRAM_TO_BITRIX_MAPPING[telegram_id] = bitrix_id
+                
+                if synced_count > 0:
+                    logger.info(f"✅ Синхронизировано {synced_count} связей из Bitrix24 в БД")
+                else:
+                    logger.info("ℹ️ В Bitrix24 не найдено сохраненных связей для синхронизации")
+        except Exception as sync_error:
+            logger.debug(f"Не удалось синхронизировать связи из Bitrix24: {sync_error}")
+            logger.info("💡 Это нормально, если исходящий вебхук не настроен или API не возвращает поля")
+            
 except Exception as e:
     logger.error(f"Ошибка при загрузке связей из БД: {e}", exc_info=True)
     logger.warning("Бот будет работать, но связи нужно будет устанавливать заново")
@@ -1837,6 +1858,114 @@ def main():
                         logger.error(f"Ошибка при создании задачи из Mini App: {e}", exc_info=True)
                         return web.json_response({'error': 'Внутренняя ошибка сервера'}, status=500)
                 
+                # API: Обработчик исходящего вебхука от Bitrix24
+                # Используется для получения уведомлений об обновлении пользователей
+                # и синхронизации Telegram ID из Bitrix24 в БД
+                async def bitrix_outgoing_webhook_handler(request):
+                    """
+                    Обработчик исходящего вебхука от Bitrix24
+                    Получает уведомления об обновлении пользователей и синхронизирует Telegram ID
+                    
+                    Формат данных от Bitrix24 может быть разным:
+                    - Старый формат: {"event": "ONUSERUPDATE", "data": {"FIELDS": {...}}}
+                    - Новый формат: {"event": "ONUSERUPDATE", "data": {...}}
+                    """
+                    try:
+                        # Получаем данные от Bitrix24
+                        data = await request.json()
+                        
+                        logger.debug(f"Получены данные от Bitrix24: {data}")
+                        
+                        # Проверяем тип события
+                        event = data.get('event', '')
+                        data_obj = data.get('data', {})
+                        
+                        logger.info(f"Получено событие от Bitrix24: {event}")
+                        
+                        # Обрабатываем только события обновления пользователей
+                        if 'USERUPDATE' in event.upper() or 'USER' in event.upper():
+                            # Получаем данные пользователя
+                            # Пробуем разные форматы данных
+                            user_data = None
+                            
+                            # Формат 1: data.FIELDS
+                            if isinstance(data_obj, dict) and 'FIELDS' in data_obj:
+                                user_data = data_obj['FIELDS']
+                            # Формат 2: data напрямую содержит поля пользователя
+                            elif isinstance(data_obj, dict) and 'ID' in data_obj:
+                                user_data = data_obj
+                            # Формат 3: data - это список с одним пользователем
+                            elif isinstance(data_obj, list) and len(data_obj) > 0:
+                                user_data = data_obj[0]
+                            
+                            if not user_data:
+                                logger.warning(f"Не удалось извлечь данные пользователя из события: {event}")
+                                return web.json_response({'status': 'ok'}, status=200)
+                            
+                            user_id = user_data.get('ID')
+                            
+                            if not user_id:
+                                logger.warning("Событие обновления пользователя без ID")
+                                return web.json_response({'status': 'ok'}, status=200)
+                            
+                            # Извлекаем Telegram ID из пользовательского поля
+                            telegram_field_name = bitrix_client.telegram_field_name
+                            telegram_id_str = user_data.get(telegram_field_name)
+                            
+                            # Также пробуем получить из других возможных полей
+                            if not telegram_id_str:
+                                # Пробуем альтернативные названия полей
+                                for alt_field in ['UF_USR_TELEGRAM', 'TELEGRAM_ID', 'TELEGRAM']:
+                                    telegram_id_str = user_data.get(alt_field)
+                                    if telegram_id_str:
+                                        logger.debug(f"Найден Telegram ID в поле {alt_field}")
+                                        break
+                            
+                            if telegram_id_str:
+                                try:
+                                    telegram_id = int(telegram_id_str)
+                                    user_id_int = int(user_id)
+                                    
+                                    # Проверяем, не изменилась ли связь
+                                    existing_bitrix_id = database.get_bitrix_user_id(telegram_id)
+                                    if existing_bitrix_id and existing_bitrix_id != user_id_int:
+                                        logger.warning(
+                                            f"⚠️ Конфликт связей: Telegram ID {telegram_id} уже связан с "
+                                            f"Bitrix24 User ID {existing_bitrix_id}, но получено {user_id_int}"
+                                        )
+                                    
+                                    # Сохраняем в БД
+                                    success = database.save_telegram_mapping(telegram_id, user_id_int)
+                                    
+                                    if success:
+                                        # Также обновляем локальное хранилище
+                                        TELEGRAM_TO_BITRIX_MAPPING[telegram_id] = user_id_int
+                                        
+                                        logger.info(
+                                            f"✅ Синхронизировано из Bitrix24: "
+                                            f"Telegram ID {telegram_id} → Bitrix24 User ID {user_id_int}"
+                                        )
+                                    else:
+                                        logger.warning(
+                                            f"⚠️ Не удалось сохранить связь в БД: "
+                                            f"Telegram ID {telegram_id} → Bitrix24 User ID {user_id_int}"
+                                        )
+                                except (ValueError, TypeError) as e:
+                                    logger.warning(f"Неверный формат Telegram ID: {telegram_id_str}, ошибка: {e}")
+                            else:
+                                logger.debug(f"Пользователь {user_id} обновлен, но Telegram ID не указан в поле {telegram_field_name}")
+                        else:
+                            logger.debug(f"Событие {event} не обрабатывается (не связано с пользователями)")
+                        
+                        # Всегда возвращаем успешный ответ, чтобы Bitrix24 не повторял запрос
+                        return web.json_response({'status': 'ok'}, status=200)
+                        
+                    except Exception as e:
+                        logger.error(f"Ошибка при обработке исходящего вебхука от Bitrix24: {e}", exc_info=True)
+                        logger.error(f"Данные запроса: {await request.text() if hasattr(request, 'text') else 'недоступны'}")
+                        # Возвращаем успешный ответ, чтобы Bitrix24 не повторял запрос
+                        return web.json_response({'status': 'error', 'message': str(e)}, status=200)
+                
                 # Регистрируем маршруты
                 # ВАЖНО: health check должен быть зарегистрирован первым и отвечать сразу
                 aio_app.router.add_get('/', health_check)
@@ -1848,6 +1977,8 @@ def main():
                 aio_app.router.add_get('/api/miniapp/users', miniapp_users_handler)
                 aio_app.router.add_get('/api/miniapp/departments', miniapp_departments_handler)
                 aio_app.router.add_post('/api/miniapp/create-task', miniapp_create_task_handler)
+                # Исходящий вебхук от Bitrix24 для синхронизации Telegram ID
+                aio_app.router.add_post('/api/bitrix/webhook', bitrix_outgoing_webhook_handler)
                 
                 # Инициализируем приложение
                 # Используем on_startup для инициализации Telegram в фоне
