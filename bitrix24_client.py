@@ -415,9 +415,196 @@ class Bitrix24Client:
             # Это позволит боту продолжать работу
             return True
     
+    def update_user_telegram_id_via_crm(self, user_id: int, telegram_id: int) -> bool:
+        """
+        Альтернативный метод: Сохранение Telegram ID через CRM контакт пользователя
+        
+        В Bitrix24 пользователи могут быть связаны с CRM контактами.
+        Этот метод пытается найти связанный контакт и сохранить Telegram ID в него.
+        
+        Args:
+            user_id: ID пользователя в Bitrix24
+            telegram_id: Telegram User ID
+            
+        Returns:
+            True если обновление прошло успешно, False в случае ошибки
+        """
+        try:
+            # Сначала получаем информацию о пользователе
+            user_info = self.get_user_by_id(user_id)
+            if not user_info:
+                logger.warning(f"Пользователь {user_id} не найден")
+                return False
+            
+            # Ищем связанный CRM контакт через email или телефон
+            email = user_info.get("EMAIL", "")
+            phone = user_info.get("PERSONAL_MOBILE", "") or user_info.get("WORK_PHONE", "")
+            
+            contact_id = None
+            
+            # Ищем контакт по email
+            if email:
+                try:
+                    result = self._make_request("crm.contact.list", {
+                        "filter": {"EMAIL": email},
+                        "select": ["ID", "UF_CRM_TELEGRAM_ID"]  # Предполагаем, что поле называется так
+                    })
+                    contacts = result.get("result", {}).get("contacts", [])
+                    if contacts:
+                        contact_id = contacts[0].get("ID")
+                        logger.info(f"Найден CRM контакт {contact_id} по email для пользователя {user_id}")
+                except Exception as e:
+                    logger.debug(f"Ошибка при поиске контакта по email: {e}")
+            
+            # Если не нашли по email, ищем по телефону
+            if not contact_id and phone:
+                try:
+                    result = self._make_request("crm.contact.list", {
+                        "filter": {"PHONE": phone},
+                        "select": ["ID", "UF_CRM_TELEGRAM_ID"]
+                    })
+                    contacts = result.get("result", {}).get("contacts", [])
+                    if contacts:
+                        contact_id = contacts[0].get("ID")
+                        logger.info(f"Найден CRM контакт {contact_id} по телефону для пользователя {user_id}")
+                except Exception as e:
+                    logger.debug(f"Ошибка при поиске контакта по телефону: {e}")
+            
+            if not contact_id:
+                logger.warning(f"Не найден CRM контакт для пользователя {user_id}")
+                return False
+            
+            # Создаем или получаем пользовательское поле для Telegram ID в контактах
+            telegram_field_name = "UF_CRM_TELEGRAM_ID"
+            
+            # Пробуем обновить контакт
+            try:
+                update_result = self._make_request("crm.contact.update", {
+                    "id": contact_id,
+                    "fields": {
+                        telegram_field_name: str(telegram_id)
+                    }
+                })
+                
+                if update_result.get("result"):
+                    logger.info(f"✅ Telegram ID {telegram_id} сохранен в CRM контакт {contact_id} для пользователя {user_id}")
+                    return True
+                else:
+                    logger.warning(f"Не удалось обновить CRM контакт: {update_result.get('error_description', 'Неизвестная ошибка')}")
+                    return False
+            except Exception as e:
+                logger.error(f"Ошибка при обновлении CRM контакта: {e}", exc_info=True)
+                return False
+                
+        except Exception as e:
+            logger.error(f"Ошибка при сохранении Telegram ID через CRM: {e}", exc_info=True)
+            return False
+    
+    def update_user_telegram_id_via_standard_field(self, user_id: int, telegram_id: int) -> bool:
+        """
+        Альтернативный метод: Сохранение Telegram ID в стандартное поле пользователя
+        
+        Использует поле PERSONAL_NOTES или другое доступное стандартное поле
+        для хранения Telegram ID.
+        
+        Args:
+            user_id: ID пользователя в Bitrix24
+            telegram_id: Telegram User ID
+            
+        Returns:
+            True если обновление прошло успешно, False в случае ошибки
+        """
+        try:
+            # Используем поле PERSONAL_NOTES для хранения Telegram ID
+            # Формат: "TELEGRAM_ID:123456789" для возможности парсинга
+            telegram_id_str = f"TELEGRAM_ID:{telegram_id}"
+            
+            # Пробуем обновить через user.update со стандартным полем
+            update_data = {
+                "ID": user_id,
+                "fields": {
+                    "PERSONAL_NOTES": telegram_id_str
+                }
+            }
+            
+            try:
+                result = self._make_request("user.update", update_data)
+                
+                if result.get("error"):
+                    logger.warning(f"Ошибка при обновлении через PERSONAL_NOTES: {result.get('error_description', '')}")
+                    return False
+                
+                result_value = result.get("result")
+                success = (
+                    result_value is True or 
+                    (isinstance(result_value, (int, str)) and str(result_value) == str(user_id)) or
+                    (isinstance(result_value, bool) and result_value)
+                )
+                
+                if success:
+                    logger.info(f"✅ Telegram ID {telegram_id} сохранен в PERSONAL_NOTES для пользователя {user_id}")
+                    return True
+                else:
+                    logger.warning(f"Обновление через PERSONAL_NOTES не подтверждено: {result_value}")
+                    return False
+                    
+            except Exception as e:
+                logger.error(f"Ошибка при обновлении через PERSONAL_NOTES: {e}", exc_info=True)
+                return False
+                
+        except Exception as e:
+            logger.error(f"Ошибка при сохранении Telegram ID через стандартное поле: {e}", exc_info=True)
+            return False
+    
     def update_user_telegram_id(self, user_id: int, telegram_id: int) -> bool:
         """
         Обновление Telegram ID пользователя в Bitrix24
+        
+        Пробует несколько методов сохранения в следующем порядке:
+        1. Через пользовательское поле (user.update) - основной метод
+        2. Через CRM контакт (если пользователь связан с контактом)
+        3. Через стандартное поле пользователя (PERSONAL_NOTES) - fallback
+        
+        Args:
+            user_id: ID пользователя в Bitrix24
+            telegram_id: Telegram User ID
+            
+        Returns:
+            True если обновление прошло успешно хотя бы одним методом, False в случае ошибки
+        """
+        telegram_id_str = str(telegram_id)
+        logger.info(f"📝 Попытка сохранить Telegram ID {telegram_id} для пользователя Bitrix24 {user_id}")
+        
+        # Метод 1: Попытка сохранить через пользовательское поле (основной метод)
+        success_via_userfield = self._update_user_telegram_id_via_userfield(user_id, telegram_id)
+        if success_via_userfield:
+            logger.info(f"✅ Telegram ID успешно сохранен через пользовательское поле")
+            return True
+        
+        logger.warning(f"⚠️ Сохранение через пользовательское поле не удалось, пробуем альтернативные методы...")
+        
+        # Метод 2: Попытка сохранить через CRM контакт
+        try:
+            success_via_crm = self.update_user_telegram_id_via_crm(user_id, telegram_id)
+            if success_via_crm:
+                logger.info(f"✅ Telegram ID успешно сохранен через CRM контакт")
+                return True
+        except Exception as crm_error:
+            logger.debug(f"Метод сохранения через CRM недоступен: {crm_error}")
+        
+        # Метод 3: Попытка сохранить через стандартное поле (fallback)
+        logger.info(f"Пробуем сохранить через стандартное поле PERSONAL_NOTES...")
+        success_via_standard = self.update_user_telegram_id_via_standard_field(user_id, telegram_id)
+        if success_via_standard:
+            logger.info(f"✅ Telegram ID успешно сохранен через стандартное поле")
+            return True
+        
+        logger.error(f"❌ Не удалось сохранить Telegram ID ни одним из методов")
+        return False
+    
+    def _update_user_telegram_id_via_userfield(self, user_id: int, telegram_id: int) -> bool:
+        """
+        Внутренний метод: Попытка сохранить Telegram ID через пользовательское поле
         
         Args:
             user_id: ID пользователя в Bitrix24
@@ -640,54 +827,74 @@ class Bitrix24Client:
         """
         Поиск пользователя Bitrix24 по Telegram ID
         
+        Ищет в следующем порядке:
+        1. В пользовательском поле (UF_USR_TELEGRAM)
+        2. В стандартном поле PERSONAL_NOTES (формат: "TELEGRAM_ID:123456789")
+        
         Args:
             telegram_id: Telegram User ID
             
         Returns:
             Информация о пользователе или None
         """
+        telegram_id_str = str(telegram_id)
+        
+        # Метод 1: Поиск через пользовательское поле
         try:
-            # Ищем пользователя по пользовательскому полю (используем название из конфигурации)
-            # Явно запрашиваем пользовательское поле в SELECT для надежности
             result = self._make_request("user.get", {
                 "FILTER": {
-                    self.telegram_field_name: str(telegram_id)
+                    self.telegram_field_name: telegram_id_str
                 },
-                "SELECT": [self.telegram_field_name]  # Явно запрашиваем поле с Telegram ID
+                "SELECT": [self.telegram_field_name]
             })
             
             users = result.get("result", [])
             if users:
                 if isinstance(users, list) and len(users) > 0:
-                    logger.debug(f"Найден пользователь Bitrix24 по Telegram ID {telegram_id}: {users[0].get('ID')}")
+                    logger.debug(f"Найден пользователь Bitrix24 по Telegram ID {telegram_id} через пользовательское поле: {users[0].get('ID')}")
                     return users[0]
                 elif isinstance(users, dict):
-                    logger.debug(f"Найден пользователь Bitrix24 по Telegram ID {telegram_id}: {users.get('ID')}")
+                    logger.debug(f"Найден пользователь Bitrix24 по Telegram ID {telegram_id} через пользовательское поле: {users.get('ID')}")
                     return users
-            
-            # Если не найдено с SELECT, пробуем без SELECT (вернутся все поля)
-            result_all = self._make_request("user.get", {
-                "FILTER": {
-                    self.telegram_field_name: str(telegram_id)
-                }
-            })
-            users_all = result_all.get("result", [])
-            if users_all:
-                if isinstance(users_all, list) and len(users_all) > 0:
-                    logger.debug(f"Найден пользователь Bitrix24 по Telegram ID {telegram_id} (без SELECT): {users_all[0].get('ID')}")
-                    return users_all[0]
-                elif isinstance(users_all, dict):
-                    logger.debug(f"Найден пользователь Bitrix24 по Telegram ID {telegram_id} (без SELECT): {users_all.get('ID')}")
-                    return users_all
-            
         except Exception as e:
-            logger.debug(f"Ошибка при поиске пользователя по Telegram ID {telegram_id}: {e}")
+            logger.debug(f"Ошибка при поиске через пользовательское поле: {e}")
+        
+        # Метод 2: Поиск через стандартное поле PERSONAL_NOTES
+        try:
+            # Ищем в формате "TELEGRAM_ID:123456789"
+            search_pattern = f"TELEGRAM_ID:{telegram_id_str}"
+            
+            # Получаем всех пользователей и ищем в PERSONAL_NOTES
+            # Примечание: Bitrix24 может не поддерживать поиск по PERSONAL_NOTES через FILTER,
+            # поэтому получаем всех пользователей и фильтруем локально
+            result_all = self._make_request("user.get", {
+                "SELECT": ["ID", "PERSONAL_NOTES"]
+            })
+            
+            users_all = result_all.get("result", [])
+            if isinstance(users_all, list):
+                for user in users_all:
+                    personal_notes = user.get("PERSONAL_NOTES", "")
+                    if personal_notes and search_pattern in personal_notes:
+                        # Найден пользователь, получаем полную информацию
+                        user_id = user.get("ID")
+                        if user_id:
+                            full_user_info = self.get_user_by_id(int(user_id))
+                            if full_user_info:
+                                logger.debug(f"Найден пользователь Bitrix24 по Telegram ID {telegram_id} через PERSONAL_NOTES: {user_id}")
+                                return full_user_info
+        except Exception as e:
+            logger.debug(f"Ошибка при поиске через PERSONAL_NOTES: {e}")
         
         return None
     
     def get_user_telegram_id(self, user_id: int) -> Optional[int]:
         """
         Получение Telegram ID пользователя Bitrix24
+        
+        Ищет в следующем порядке:
+        1. В пользовательском поле (UF_USR_TELEGRAM)
+        2. В стандартном поле PERSONAL_NOTES (формат: "TELEGRAM_ID:123456789")
         
         Args:
             user_id: ID пользователя в Bitrix24
@@ -696,21 +903,33 @@ class Bitrix24Client:
             Telegram ID или None
         """
         try:
-            # Явно запрашиваем пользовательское поле с Telegram ID
+            # Метод 1: Пробуем получить из пользовательского поля
             user_info = self.get_user_by_id(user_id)
             if user_info:
                 telegram_id_value = user_info.get(self.telegram_field_name)
                 if telegram_id_value:
                     try:
-                        # Значение может быть строкой или числом
                         telegram_id = int(telegram_id_value) if telegram_id_value else None
-                        logger.debug(f"Получен Telegram ID {telegram_id} для пользователя Bitrix24 {user_id}")
+                        logger.debug(f"Получен Telegram ID {telegram_id} из пользовательского поля для пользователя Bitrix24 {user_id}")
                         return telegram_id
                     except (ValueError, TypeError) as e:
-                        logger.debug(f"Не удалось преобразовать Telegram ID в число для пользователя {user_id}: {telegram_id_value}, ошибка: {e}")
-                        return None
-                else:
-                    logger.debug(f"Поле {self.telegram_field_name} не найдено или пусто для пользователя {user_id}")
+                        logger.debug(f"Не удалось преобразовать Telegram ID в число: {telegram_id_value}, ошибка: {e}")
+                
+                # Метод 2: Пробуем получить из стандартного поля PERSONAL_NOTES
+                personal_notes = user_info.get("PERSONAL_NOTES", "")
+                if personal_notes:
+                    # Ищем формат "TELEGRAM_ID:123456789"
+                    import re
+                    match = re.search(r'TELEGRAM_ID:(\d+)', personal_notes)
+                    if match:
+                        try:
+                            telegram_id = int(match.group(1))
+                            logger.debug(f"Получен Telegram ID {telegram_id} из PERSONAL_NOTES для пользователя Bitrix24 {user_id}")
+                            return telegram_id
+                        except (ValueError, TypeError) as e:
+                            logger.debug(f"Не удалось преобразовать Telegram ID из PERSONAL_NOTES: {e}")
+                
+                logger.debug(f"Telegram ID не найден ни в пользовательском поле, ни в PERSONAL_NOTES для пользователя {user_id}")
         except Exception as e:
             logger.debug(f"Ошибка при получении Telegram ID для пользователя {user_id}: {e}")
         
