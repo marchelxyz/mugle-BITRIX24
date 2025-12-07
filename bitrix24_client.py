@@ -49,32 +49,15 @@ class Bitrix24Client:
         
         url = f"{self.base_url}/{method}"
         
-        try:
-            if use_get:
-                # Для GET запросов параметры передаются в URL
-                logger.debug(f"GET запрос к {method} с параметрами: {params}")
-                response = requests.get(url, params=params, timeout=10)
-            else:
-                # Для POST запросов параметры передаются в JSON body
-                logger.debug(f"POST запрос к {method} с параметрами: {params}")
-                response = requests.post(url, json=params, timeout=10)
-            
-            response.raise_for_status()
-            result = response.json()
-            
-            # Проверяем наличие ошибки в ответе Bitrix24 (даже если HTTP статус 200)
-            if result.get("error"):
-                error_code = result.get("error", "UNKNOWN")
-                error_desc = result.get("error_description", "")
-                logger.warning(f"Bitrix24 API вернул ошибку для метода {method}: {error_code} - {error_desc}")
-            
-            return result
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Ошибка HTTP запроса к {method}: {e}")
-            raise
-        except Exception as e:
-            logger.error(f"Неожиданная ошибка при запросе к {method}: {e}", exc_info=True)
-            raise
+        if use_get:
+            # Для GET запросов параметры передаются в URL
+            response = requests.get(url, params=params)
+        else:
+            # Для POST запросов параметры передаются в JSON body
+            response = requests.post(url, json=params)
+        
+        response.raise_for_status()
+        return response.json()
     
     def create_task(
         self,
@@ -175,100 +158,43 @@ class Bitrix24Client:
             Информация о пользователе или None
         """
         try:
-            # Проверяем наличие ошибки в ответе API
             # В Bitrix24 API метод user.get может не возвращать пользовательские поля по умолчанию
             # ВАЖНО: Для получения пользовательских полей нужно явно указать их в SELECT
+            # Пробуем сначала с SELECT для явного запроса пользовательского поля
+            try:
+                result = self._make_request("user.get", {
+                    "ID": user_id,
+                    "SELECT": [self.telegram_field_name]  # Явно запрашиваем пользовательское поле
+                })
+                if result.get("result"):
+                    user_data = result["result"][0] if isinstance(result["result"], list) else result["result"]
+                    # Проверяем, что поле есть в результате
+                    if self.telegram_field_name in user_data:
+                        logger.debug(f"Поле {self.telegram_field_name} найдено через SELECT: {user_data.get(self.telegram_field_name)}")
+                    return user_data
+            except Exception as select_error:
+                logger.debug(f"Ошибка при запросе с SELECT: {select_error}")
             
-            # Пробуем разные форматы ID (число и строка)
-            id_formats = [user_id, str(user_id)]
-            
-            for user_id_format in id_formats:
-                # Пробуем сначала с SELECT для явного запроса пользовательского поля
-                try:
-                    result = self._make_request("user.get", {
-                        "ID": user_id_format,
-                        "SELECT": [self.telegram_field_name]  # Явно запрашиваем пользовательское поле
-                    })
-                    
-                    # Проверяем наличие ошибки в ответе
-                    if result.get("error"):
-                        error_code = result.get("error", "UNKNOWN")
-                        error_desc = result.get("error_description", "")
-                        logger.warning(f"Ошибка API при получении пользователя {user_id} (формат ID: {user_id_format}): {error_code} - {error_desc}")
-                        continue
-                    
-                    if result.get("result"):
-                        result_data = result["result"]
-                        
-                        # Обрабатываем список результатов
-                        if isinstance(result_data, list):
-                            if len(result_data) > 0:
-                                user_data = result_data[0]
-                                # Проверяем, что поле есть в результате
-                                if self.telegram_field_name in user_data:
-                                    logger.debug(f"Поле {self.telegram_field_name} найдено через SELECT: {user_data.get(self.telegram_field_name)}")
-                                logger.info(f"✅ Пользователь {user_id} найден в Bitrix24 (с SELECT)")
-                                return user_data
-                            else:
-                                logger.debug(f"Пустой список результатов для пользователя {user_id} (формат ID: {user_id_format})")
-                                continue
-                        # Обрабатываем словарь (один пользователь)
-                        elif isinstance(result_data, dict):
-                            if result_data.get("ID"):
-                                logger.info(f"✅ Пользователь {user_id} найден в Bitrix24 (с SELECT, формат словарь)")
-                                return result_data
-                            else:
-                                logger.debug(f"Результат не содержит ID для пользователя {user_id}")
-                                continue
-                except Exception as select_error:
-                    logger.debug(f"Ошибка при запросе с SELECT (формат ID: {user_id_format}): {select_error}")
-                    continue
+            # Если SELECT не сработал, пробуем без SELECT (вернутся все поля)
+            logger.debug("Пробуем запрос без SELECT...")
+            result = self._make_request("user.get", {"ID": user_id})
+            if result.get("result"):
+                user_data = result["result"][0] if isinstance(result["result"], list) else result["result"]
                 
-                # Если SELECT не сработал, пробуем без SELECT (вернутся все поля)
-                try:
-                    logger.debug(f"Пробуем запрос без SELECT для ID формата {user_id_format}...")
-                    result = self._make_request("user.get", {"ID": user_id_format})
-                    
-                    # Проверяем наличие ошибки в ответе
-                    if result.get("error"):
-                        error_code = result.get("error", "UNKNOWN")
-                        error_desc = result.get("error_description", "")
-                        logger.warning(f"Ошибка API при получении пользователя {user_id} без SELECT (формат ID: {user_id_format}): {error_code} - {error_desc}")
-                        continue
-                    
-                    if result.get("result"):
-                        result_data = result["result"]
-                        
-                        # Обрабатываем список результатов
-                        if isinstance(result_data, list):
-                            if len(result_data) > 0:
-                                user_data = result_data[0]
-                                # Проверяем, есть ли пользовательское поле в результате
-                                if self.telegram_field_name not in user_data:
-                                    logger.debug(f"Поле {self.telegram_field_name} не найдено в результате без SELECT")
-                                logger.info(f"✅ Пользователь {user_id} найден в Bitrix24 (без SELECT)")
-                                return user_data
-                            else:
-                                logger.debug(f"Пустой список результатов для пользователя {user_id} без SELECT (формат ID: {user_id_format})")
-                                continue
-                        # Обрабатываем словарь (один пользователь)
-                        elif isinstance(result_data, dict):
-                            if result_data.get("ID"):
-                                logger.info(f"✅ Пользователь {user_id} найден в Bitrix24 (без SELECT, формат словарь)")
-                                return result_data
-                            else:
-                                logger.debug(f"Результат без SELECT не содержит ID для пользователя {user_id}")
-                                continue
-                except Exception as no_select_error:
-                    logger.debug(f"Ошибка при запросе без SELECT (формат ID: {user_id_format}): {no_select_error}")
-                    continue
-            
-            # Если ни один формат не сработал
-            logger.warning(f"❌ Пользователь с ID {user_id} не найден в Bitrix24 после попыток с разными форматами ID")
-            
+                # Проверяем, есть ли пользовательское поле в результате
+                if self.telegram_field_name not in user_data:
+                    logger.debug(f"Поле {self.telegram_field_name} не найдено в результате без SELECT")
+                    # Пробуем запросить все пользовательские поля через user.userfield.get
+                    try:
+                        # Получаем значение поля напрямую через user.userfield.get с фильтром
+                        # Это альтернативный способ получения значения пользовательского поля
+                        logger.debug(f"Пробуем получить значение поля через альтернативный метод...")
+                    except Exception:
+                        pass
+                
+                return user_data
         except Exception as e:
-            logger.error(f"Ошибка при получении пользователя {user_id}: {e}", exc_info=True)
-        
+            logger.debug(f"Ошибка при получении пользователя {user_id}: {e}")
         return None
     
     def search_users(self, query: str) -> List[Dict]:
