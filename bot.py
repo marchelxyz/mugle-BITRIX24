@@ -544,10 +544,15 @@ async def link_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"Поиск пользователя Bitrix24 с ID {bitrix_user_id} для команды /link от пользователя Telegram {telegram_user_id}")
         user_info = bitrix_client.get_user_by_id(bitrix_user_id)
         
-        # Проверяем не только наличие user_info, но и наличие ID в нем
-        if not user_info or not user_info.get("ID"):
+        # Проверяем наличие user_info (ID теперь всегда добавляется в get_user_by_id)
+        if not user_info:
             logger.warning(f"Пользователь Bitrix24 с ID {bitrix_user_id} не найден при выполнении команды /link")
             logger.debug(f"user_info: {user_info}")
+        elif not user_info.get("ID"):
+            # Если user_info есть, но ID нет - это неожиданно, но продолжаем работу
+            logger.warning(f"Пользователь Bitrix24 найден, но ID отсутствует в результате. user_info: {user_info}")
+            # Добавляем ID из запроса для совместимости
+            user_info["ID"] = str(bitrix_user_id)
             await update.message.reply_text(
                 f"❌ Пользователь с ID {bitrix_user_id} не найден в Битрикс24.\n\n"
                 f"Возможные причины:\n"
@@ -633,11 +638,15 @@ async def check_telegram_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Получаем информацию о пользователе
         user_info = bitrix_client.get_user_by_id(bitrix_user_id)
-        if not user_info or not user_info.get("ID"):
+        if not user_info:
             await update.message.reply_text(
                 f"❌ Пользователь с ID {bitrix_user_id} не найден в Битрикс24"
             )
             return
+        # Если ID отсутствует, добавляем его из запроса
+        if not user_info.get("ID"):
+            logger.debug(f"ID отсутствует в user_info, добавляем из запроса: {bitrix_user_id}")
+            user_info["ID"] = str(bitrix_user_id)
         
         # Проверяем наличие Telegram ID
         telegram_id = user_info.get(bitrix_client.telegram_field_name)
@@ -694,11 +703,15 @@ async def link_username(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Проверяем, существует ли пользователь в Битрикс24
         user_info = bitrix_client.get_user_by_id(bitrix_user_id)
-        if not user_info or not user_info.get("ID"):
+        if not user_info:
             await update.message.reply_text(
                 f"❌ Пользователь с ID {bitrix_user_id} не найден в Битрикс24"
             )
             return
+        # Если ID отсутствует, добавляем его из запроса
+        if not user_info.get("ID"):
+            logger.debug(f"ID отсутствует в user_info, добавляем из запроса: {bitrix_user_id}")
+            user_info["ID"] = str(bitrix_user_id)
         
         USERNAME_TO_BITRIX_MAPPING[telegram_username] = bitrix_user_id
         await update.message.reply_text(
