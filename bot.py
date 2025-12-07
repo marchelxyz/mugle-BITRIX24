@@ -543,8 +543,11 @@ async def link_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Проверяем, существует ли пользователь в Битрикс24
         logger.info(f"Поиск пользователя Bitrix24 с ID {bitrix_user_id} для команды /link от пользователя Telegram {telegram_user_id}")
         user_info = bitrix_client.get_user_by_id(bitrix_user_id)
-        if not user_info:
+        
+        # Проверяем не только наличие user_info, но и наличие ID в нем
+        if not user_info or not user_info.get("ID"):
             logger.warning(f"Пользователь Bitrix24 с ID {bitrix_user_id} не найден при выполнении команды /link")
+            logger.debug(f"user_info: {user_info}")
             await update.message.reply_text(
                 f"❌ Пользователь с ID {bitrix_user_id} не найден в Битрикс24.\n\n"
                 f"Возможные причины:\n"
@@ -630,7 +633,7 @@ async def check_telegram_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Получаем информацию о пользователе
         user_info = bitrix_client.get_user_by_id(bitrix_user_id)
-        if not user_info:
+        if not user_info or not user_info.get("ID"):
             await update.message.reply_text(
                 f"❌ Пользователь с ID {bitrix_user_id} не найден в Битрикс24"
             )
@@ -691,7 +694,7 @@ async def link_username(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Проверяем, существует ли пользователь в Битрикс24
         user_info = bitrix_client.get_user_by_id(bitrix_user_id)
-        if not user_info:
+        if not user_info or not user_info.get("ID"):
             await update.message.reply_text(
                 f"❌ Пользователь с ID {bitrix_user_id} не найден в Битрикс24"
             )
