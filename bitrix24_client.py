@@ -204,6 +204,10 @@ class Bitrix24Client:
                         if isinstance(result_data, list):
                             if len(result_data) > 0:
                                 user_data = result_data[0]
+                                # Проверяем, что данные содержат ID
+                                if not user_data.get("ID"):
+                                    logger.warning(f"Результат для пользователя {user_id} не содержит ID: {user_data}")
+                                    continue
                                 # Проверяем, что поле есть в результате
                                 if self.telegram_field_name in user_data:
                                     logger.debug(f"Поле {self.telegram_field_name} найдено через SELECT: {user_data.get(self.telegram_field_name)}")
@@ -243,6 +247,10 @@ class Bitrix24Client:
                         if isinstance(result_data, list):
                             if len(result_data) > 0:
                                 user_data = result_data[0]
+                                # Проверяем, что данные содержат ID
+                                if not user_data.get("ID"):
+                                    logger.warning(f"Результат для пользователя {user_id} не содержит ID (без SELECT): {user_data}")
+                                    continue
                                 # Проверяем, есть ли пользовательское поле в результате
                                 if self.telegram_field_name not in user_data:
                                     logger.debug(f"Поле {self.telegram_field_name} не найдено в результате без SELECT")
@@ -265,6 +273,7 @@ class Bitrix24Client:
             
             # Если ни один формат не сработал
             logger.warning(f"❌ Пользователь с ID {user_id} не найден в Bitrix24 после попыток с разными форматами ID")
+            logger.debug(f"Были испробованы форматы ID: {id_formats}")
             
         except Exception as e:
             logger.error(f"Ошибка при получении пользователя {user_id}: {e}", exc_info=True)
