@@ -204,18 +204,13 @@ class Bitrix24Client:
                         if isinstance(result_data, list):
                             if len(result_data) > 0:
                                 user_data = result_data[0]
-                                # Проверяем, что данные не пустые (если есть хотя бы одно поле, считаем валидным)
-                                # ID может быть в разных форматах или отсутствовать в некоторых ответах API
-                                if not user_data or len(user_data) == 0:
-                                    logger.debug(f"Пустой результат для пользователя {user_id} (формат ID: {user_id_format})")
+                                # Проверяем, что данные содержат ID
+                                if not user_data.get("ID"):
+                                    logger.warning(f"Результат для пользователя {user_id} не содержит ID: {user_data}")
                                     continue
                                 # Проверяем, что поле есть в результате
                                 if self.telegram_field_name in user_data:
                                     logger.debug(f"Поле {self.telegram_field_name} найдено через SELECT: {user_data.get(self.telegram_field_name)}")
-                                # Если ID нет в явном виде, пробуем найти его в других полях или использовать запрошенный ID
-                                if not user_data.get("ID"):
-                                    logger.debug(f"ID не найден в явном виде, используем запрошенный ID {user_id_format}")
-                                    user_data["ID"] = str(user_id_format) if isinstance(user_id_format, str) else user_id_format
                                 logger.info(f"✅ Пользователь {user_id} найден в Bitrix24 (с SELECT)")
                                 return user_data
                             else:
@@ -223,16 +218,12 @@ class Bitrix24Client:
                                 continue
                         # Обрабатываем словарь (один пользователь)
                         elif isinstance(result_data, dict):
-                            # Проверяем, что данные не пустые
-                            if not result_data or len(result_data) == 0:
-                                logger.debug(f"Пустой результат словарь для пользователя {user_id}")
+                            if result_data.get("ID"):
+                                logger.info(f"✅ Пользователь {user_id} найден в Bitrix24 (с SELECT, формат словарь)")
+                                return result_data
+                            else:
+                                logger.debug(f"Результат не содержит ID для пользователя {user_id}")
                                 continue
-                            # Если ID нет в явном виде, добавляем запрошенный ID
-                            if not result_data.get("ID"):
-                                logger.debug(f"ID не найден в явном виде, используем запрошенный ID {user_id_format}")
-                                result_data["ID"] = str(user_id_format) if isinstance(user_id_format, str) else user_id_format
-                            logger.info(f"✅ Пользователь {user_id} найден в Bitrix24 (с SELECT, формат словарь)")
-                            return result_data
                 except Exception as select_error:
                     logger.debug(f"Ошибка при запросе с SELECT (формат ID: {user_id_format}): {select_error}")
                     continue
@@ -256,17 +247,13 @@ class Bitrix24Client:
                         if isinstance(result_data, list):
                             if len(result_data) > 0:
                                 user_data = result_data[0]
-                                # Проверяем, что данные не пустые (если есть хотя бы одно поле, считаем валидным)
-                                if not user_data or len(user_data) == 0:
-                                    logger.debug(f"Пустой результат для пользователя {user_id} без SELECT (формат ID: {user_id_format})")
+                                # Проверяем, что данные содержат ID
+                                if not user_data.get("ID"):
+                                    logger.warning(f"Результат для пользователя {user_id} не содержит ID (без SELECT): {user_data}")
                                     continue
                                 # Проверяем, есть ли пользовательское поле в результате
                                 if self.telegram_field_name not in user_data:
                                     logger.debug(f"Поле {self.telegram_field_name} не найдено в результате без SELECT")
-                                # Если ID нет в явном виде, пробуем найти его в других полях или использовать запрошенный ID
-                                if not user_data.get("ID"):
-                                    logger.debug(f"ID не найден в явном виде, используем запрошенный ID {user_id_format}")
-                                    user_data["ID"] = str(user_id_format) if isinstance(user_id_format, str) else user_id_format
                                 logger.info(f"✅ Пользователь {user_id} найден в Bitrix24 (без SELECT)")
                                 return user_data
                             else:
@@ -274,16 +261,12 @@ class Bitrix24Client:
                                 continue
                         # Обрабатываем словарь (один пользователь)
                         elif isinstance(result_data, dict):
-                            # Проверяем, что данные не пустые
-                            if not result_data or len(result_data) == 0:
-                                logger.debug(f"Пустой результат словарь без SELECT для пользователя {user_id}")
+                            if result_data.get("ID"):
+                                logger.info(f"✅ Пользователь {user_id} найден в Bitrix24 (без SELECT, формат словарь)")
+                                return result_data
+                            else:
+                                logger.debug(f"Результат без SELECT не содержит ID для пользователя {user_id}")
                                 continue
-                            # Если ID нет в явном виде, добавляем запрошенный ID
-                            if not result_data.get("ID"):
-                                logger.debug(f"ID не найден в явном виде, используем запрошенный ID {user_id_format}")
-                                result_data["ID"] = str(user_id_format) if isinstance(user_id_format, str) else user_id_format
-                            logger.info(f"✅ Пользователь {user_id} найден в Bitrix24 (без SELECT, формат словарь)")
-                            return result_data
                 except Exception as no_select_error:
                     logger.debug(f"Ошибка при запросе без SELECT (формат ID: {user_id_format}): {no_select_error}")
                     continue
