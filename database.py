@@ -44,7 +44,14 @@ def init_connection_pool():
     global _connection_pool
     
     if _connection_pool is not None:
-        return
+        # Проверяем, что пул все еще работает
+        try:
+            test_conn = _connection_pool.getconn()
+            _connection_pool.putconn(test_conn)
+            return
+        except Exception as e:
+            logger.warning(f"⚠️ Пул соединений недоступен, переинициализация: {e}")
+            _connection_pool = None
     
     database_url = get_database_url()
     if not database_url:
@@ -64,7 +71,10 @@ def init_connection_pool():
             dsn=database_url,
             connect_timeout=10
         )
-        logger.info("✅ Пул соединений с PostgreSQL успешно инициализирован")
+        # Проверяем соединение, получая и возвращая одно соединение
+        test_conn = _connection_pool.getconn()
+        _connection_pool.putconn(test_conn)
+        logger.info("✅ Пул соединений с PostgreSQL успешно инициализирован и проверен")
     except Exception as e:
         logger.error(f"❌ Ошибка при инициализации пула соединений PostgreSQL: {e}", exc_info=True)
         _connection_pool = None
@@ -76,15 +86,32 @@ def get_db_connection():
     if _connection_pool is None:
         raise RuntimeError("Пул соединений не инициализирован. Вызовите init_connection_pool() сначала.")
     
-    conn = _connection_pool.getconn()
+    conn = None
     try:
+        conn = _connection_pool.getconn()
         yield conn
         conn.commit()
-    except Exception:
-        conn.rollback()
+    except psycopg2.OperationalError as e:
+        logger.error(f"❌ Ошибка подключения к PostgreSQL: {e}", exc_info=True)
+        if conn:
+            try:
+                conn.rollback()
+            except:
+                pass
+        raise
+    except Exception as e:
+        if conn:
+            try:
+                conn.rollback()
+            except:
+                pass
         raise
     finally:
-        _connection_pool.putconn(conn)
+        if conn:
+            try:
+                _connection_pool.putconn(conn)
+            except Exception as e:
+                logger.error(f"❌ Ошибка при возврате соединения в пул: {e}", exc_info=True)
 
 
 def init_database():
@@ -163,7 +190,12 @@ def get_bitrix_user_id_by_telegram_id(telegram_id: int) -> Optional[int]:
 def set_telegram_to_bitrix_mapping(telegram_id: int, bitrix_user_id: int) -> bool:
     """Сохранение маппинга Telegram ID -> Bitrix24 User ID"""
     if _connection_pool is None:
-        return False
+        logger.warning(f"⚠️ Пул соединений PostgreSQL не инициализирован. Попытка переинициализации...")
+        init_connection_pool()
+        if _connection_pool is None:
+            logger.warning(f"⚠️ Не удалось инициализировать пул соединений. Не удалось сохранить связь Telegram {telegram_id} -> Bitrix {bitrix_user_id}")
+            return False
+    
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
@@ -173,10 +205,28 @@ def set_telegram_to_bitrix_mapping(telegram_id: int, bitrix_user_id: int) -> boo
                     ON CONFLICT (telegram_id) 
                     DO UPDATE SET bitrix_user_id = EXCLUDED.bitrix_user_id, updated_at = CURRENT_TIMESTAMP
                 """, (telegram_id, bitrix_user_id))
-                conn.commit()
+                # Коммит выполняется автоматически контекстным менеджером get_db_connection
+                logger.info(f"✅ Связь сохранена в PostgreSQL: Telegram {telegram_id} -> Bitrix {bitrix_user_id}")
                 return True
+    except RuntimeError as e:
+        logger.error(f"❌ Ошибка при получении соединения с PostgreSQL: {e}", exc_info=True)
+        # Пытаемся переинициализировать пул
+        logger.info("Попытка переинициализации пула соединений...")
+        global _connection_pool
+        _connection_pool = None
+        init_connection_pool()
+        return False
+    except psycopg2.OperationalError as e:
+        logger.error(f"❌ Ошибка подключения к PostgreSQL: {e}", exc_info=True)
+        # Пытаемся переинициализировать пул
+        logger.info("Попытка переинициализации пула соединений после операционной ошибки...")
+        global _connection_pool
+        _connection_pool = None
+        init_connection_pool()
+        return False
     except Exception as e:
-        logger.debug(f"Ошибка при сохранении маппинга Telegram {telegram_id} -> Bitrix {bitrix_user_id}: {e}")
+        logger.error(f"❌ Ошибка при сохранении маппинга Telegram {telegram_id} -> Bitrix {bitrix_user_id}: {e}", exc_info=True)
+        logger.error(f"   Тип ошибки: {type(e).__name__}")
         return False
 
 
