@@ -276,10 +276,20 @@ def find_bitrix_user_by_name(name: str) -> Optional[int]:
             if (full_name == name.lower() or 
                 (len(name_parts) >= 2 and 
                  user_name == name_parts[0] and user_last_name == name_parts[1])):
-                return int(user.get("ID"))
+                user_id = user.get("ID")
+                if user_id:
+                    try:
+                        return int(user_id)
+                    except (ValueError, TypeError):
+                        logger.warning(f"Не удалось преобразовать ID пользователя в int: {user_id}")
         
         # Если точного совпадения нет, возвращаем первого найденного
-        return int(users[0].get("ID"))
+        first_user_id = users[0].get("ID")
+        if first_user_id:
+            try:
+                return int(first_user_id)
+            except (ValueError, TypeError):
+                logger.warning(f"Не удалось преобразовать ID первого пользователя в int: {first_user_id}")
     
     return None
 
@@ -351,9 +361,12 @@ async def create_task_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     creator_bitrix_id = TELEGRAM_TO_BITRIX_MAPPING.get(telegram_user_id)
     if not creator_bitrix_id:
         creator_info = bitrix_client.get_user_by_telegram_id(telegram_user_id)
-        if creator_info:
-            creator_bitrix_id = int(creator_info.get("ID"))
-            TELEGRAM_TO_BITRIX_MAPPING[telegram_user_id] = creator_bitrix_id
+        if creator_info and creator_info.get("ID"):
+            try:
+                creator_bitrix_id = int(creator_info.get("ID"))
+                TELEGRAM_TO_BITRIX_MAPPING[telegram_user_id] = creator_bitrix_id
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Не удалось преобразовать ID создателя в int: {e}, creator_info={creator_info}")
     
     if not creator_bitrix_id:
         await update.message.reply_text(
@@ -722,11 +735,14 @@ async def start_task_creation(update: Update, context: ContextTypes.DEFAULT_TYPE
     # Если не найдено локально, ищем в Bitrix24
     if not creator_id:
         user_info = bitrix_client.get_user_by_telegram_id(telegram_user_id)
-        if user_info:
-            creator_id = int(user_info.get("ID"))
-            # Сохраняем в локальное хранилище для быстрого доступа
-            TELEGRAM_TO_BITRIX_MAPPING[telegram_user_id] = creator_id
-            logger.info(f"Пользователь найден в Bitrix24 по Telegram ID {telegram_user_id}: {creator_id}")
+        if user_info and user_info.get("ID"):
+            try:
+                creator_id = int(user_info.get("ID"))
+                # Сохраняем в локальное хранилище для быстрого доступа
+                TELEGRAM_TO_BITRIX_MAPPING[telegram_user_id] = creator_id
+                logger.info(f"Пользователь найден в Bitrix24 по Telegram ID {telegram_user_id}: {creator_id}")
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Не удалось преобразовать ID создателя в int: {e}, user_info={user_info}")
     
     if not creator_id:
         await update.message.reply_text(
@@ -1072,17 +1088,23 @@ async def handle_reply_with_mention(update: Update, context: ContextTypes.DEFAUL
     creator_bitrix_id = TELEGRAM_TO_BITRIX_MAPPING.get(creator_telegram_id)
     if not creator_bitrix_id:
         creator_info = bitrix_client.get_user_by_telegram_id(creator_telegram_id)
-        if creator_info:
-            creator_bitrix_id = int(creator_info.get("ID"))
-            TELEGRAM_TO_BITRIX_MAPPING[creator_telegram_id] = creator_bitrix_id
+        if creator_info and creator_info.get("ID"):
+            try:
+                creator_bitrix_id = int(creator_info.get("ID"))
+                TELEGRAM_TO_BITRIX_MAPPING[creator_telegram_id] = creator_bitrix_id
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Не удалось преобразовать ID создателя в int: {e}, creator_info={creator_info}")
     
     # Определяем Bitrix ID исполнителя
     responsible_bitrix_id = TELEGRAM_TO_BITRIX_MAPPING.get(responsible_telegram_id)
     if not responsible_bitrix_id:
         responsible_info = bitrix_client.get_user_by_telegram_id(responsible_telegram_id)
-        if responsible_info:
-            responsible_bitrix_id = int(responsible_info.get("ID"))
-            TELEGRAM_TO_BITRIX_MAPPING[responsible_telegram_id] = responsible_bitrix_id
+        if responsible_info and responsible_info.get("ID"):
+            try:
+                responsible_bitrix_id = int(responsible_info.get("ID"))
+                TELEGRAM_TO_BITRIX_MAPPING[responsible_telegram_id] = responsible_bitrix_id
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Не удалось преобразовать ID исполнителя в int: {e}, responsible_info={responsible_info}")
     
     if not creator_bitrix_id:
         await message.reply_text(
@@ -1633,10 +1655,13 @@ def main():
                             creator_bitrix_id = TELEGRAM_TO_BITRIX_MAPPING.get(telegram_user_id)
                             if not creator_bitrix_id:
                                 creator_info = bitrix_client.get_user_by_telegram_id(telegram_user_id)
-                                if creator_info:
-                                    creator_bitrix_id = int(creator_info.get("ID"))
-                                    TELEGRAM_TO_BITRIX_MAPPING[telegram_user_id] = creator_bitrix_id
-                                    logger.info(f"Пользователь найден в Bitrix24: {creator_bitrix_id}")
+                                if creator_info and creator_info.get("ID"):
+                                    try:
+                                        creator_bitrix_id = int(creator_info.get("ID"))
+                                        TELEGRAM_TO_BITRIX_MAPPING[telegram_user_id] = creator_bitrix_id
+                                        logger.info(f"Пользователь найден в Bitrix24: {creator_bitrix_id}")
+                                    except (ValueError, TypeError) as e:
+                                        logger.warning(f"Не удалось преобразовать ID создателя в int: {e}, creator_info={creator_info}")
                             
                             if not creator_bitrix_id:
                                 logger.warning(f"Пользователь {telegram_user_id} не найден в Bitrix24")
