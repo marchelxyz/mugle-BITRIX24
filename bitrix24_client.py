@@ -60,7 +60,21 @@ class Bitrix24Client:
             # Для POST запросов параметры передаются в JSON body
             response = requests.post(url, json=params)
         
-        response.raise_for_status()
+        # Улучшенная обработка ошибок для диагностики
+        try:
+            response.raise_for_status()
+        except requests.exceptions.HTTPError as e:
+            # Логируем детали ошибки перед повторным выбросом
+            try:
+                error_json = response.json()
+                error_code = error_json.get("error", "")
+                error_description = error_json.get("error_description", "")
+                logger.error(f"HTTP ошибка {response.status_code} для метода {method}: {error_code} - {error_description}")
+                logger.debug(f"Полный ответ: {error_json}")
+            except:
+                logger.error(f"HTTP ошибка {response.status_code} для метода {method}: {response.text[:500]}")
+            raise
+        
         return response.json()
     
     def create_task(
@@ -270,15 +284,30 @@ class Bitrix24Client:
                 logger.info(f"✅ Файл {filename} успешно загружен с реальным ID папки (ID: {result})")
                 return result
         
-        # Если ничего не сработало, пробуем старый метод как fallback
-        logger.debug(f"Попытка 4: Использование старого метода")
+        # Если ничего не сработало, пробуем альтернативный метод как fallback
+        logger.debug(f"Попытка 4: Использование альтернативного метода")
         result = self._upload_file_alternative(file_content, filename, folder_id)
         if result:
-            logger.info(f"✅ Файл {filename} успешно загружен через старый метод (ID: {result})")
+            logger.info(f"✅ Файл {filename} успешно загружен через альтернативный метод (ID: {result})")
+            return result
+        
+        # Пробуем загрузить в корневую папку (ID = 0)
+        logger.debug(f"Попытка 5: Загрузка в корневую папку (ID=0)")
+        result = self._upload_file_via_disk_folder(file_content, filename, "0")
+        if result:
+            logger.info(f"✅ Файл {filename} успешно загружен в корневую папку (ID: {result})")
+            return result
+        
+        # Пробуем через disk.file.uploadfile (альтернативный метод Bitrix24)
+        logger.debug(f"Попытка 6: Загрузка через disk.file.uploadfile")
+        result = self._upload_file_via_disk_file_uploadfile(file_content, filename, folder_id)
+        if result:
+            logger.info(f"✅ Файл {filename} успешно загружен через disk.file.uploadfile (ID: {result})")
             return result
         
         logger.error(f"❌ Не удалось загрузить файл {filename} ни одним из методов")
         logger.error(f"💡 Проверьте права вебхука на загрузку файлов (disk)")
+        logger.error(f"💡 Проверьте, что папка '{folder_id}' существует и доступна")
         return None
     
     def _upload_file_via_disk_folder(self, file_content: bytes, filename: str, folder_id: str) -> Optional[int]:
@@ -289,6 +318,10 @@ class Bitrix24Client:
             import base64
             
             file_base64 = base64.b64encode(file_content).decode('utf-8')
+            file_size_mb = len(file_content) / (1024 * 1024)
+            
+            logger.debug(f"Попытка загрузки файла {filename} (размер: {file_size_mb:.2f} MB) в папку {folder_id}")
+            logger.debug(f"Размер base64: {len(file_base64)} символов")
             
             # Пробуем разные форматы для disk.folder.uploadfile
             # Формат 1: с data[NAME] (стандартный формат Bitrix24)
@@ -297,6 +330,7 @@ class Bitrix24Client:
                 "data[NAME]": filename,
                 "fileContent": file_base64
             }
+            logger.debug(f"Формат 1: id={folder_id}, data[NAME]={filename}, fileContent length={len(file_base64)}")
             
             try:
                 result = self._make_request("disk.folder.uploadfile", upload_data_v1)
@@ -315,17 +349,47 @@ class Bitrix24Client:
                 
                 error = result.get("error", "")
                 error_description = result.get("error_description", "")
+                error_code = result.get("error_code", "")
                 if error:
-                    logger.debug(f"disk.folder.uploadfile (формат 1) вернул ошибку: {error} - {error_description}")
+                    logger.warning(f"⚠️ disk.folder.uploadfile (формат 1) вернул ошибку: {error}")
+                    if error_code:
+                        logger.warning(f"   Код ошибки: {error_code}")
+                    if error_description:
+                        logger.warning(f"   Описание: {error_description}")
+            except requests.exceptions.HTTPError as http_err:
+                if http_err.response.status_code == 400:
+                    try:
+                        error_json = http_err.response.json()
+                        error_code = error_json.get("error", "")
+                        error_description = error_json.get("error_description", "")
+                        logger.warning(f"⚠️ HTTP 400 при загрузке через формат 1: {error_code} - {error_description}")
+                        logger.info(f"💡 Проверьте:")
+                        logger.info(f"   - Существует ли папка с ID '{folder_id}'")
+                        logger.info(f"   - Права вебхука на disk.folder.uploadfile")
+                        logger.info(f"   - Размер файла не превышает лимиты Bitrix24")
+                    except:
+                        logger.warning(f"⚠️ HTTP 400 при загрузке через формат 1: {http_err}")
+                else:
+                    logger.debug(f"Ошибка HTTP {http_err.response.status_code} при загрузке через формат 1: {http_err}")
             except Exception as e1:
                 logger.debug(f"Ошибка при загрузке через формат 1: {e1}")
             
-            # Формат 2: с data как объект
+            # Формат 2: пробуем получить реальный ID папки и использовать его
+            # Иногда "shared_files" - это строка, а нужен числовой ID
+            try:
+                # Пробуем получить информацию о папке
+                folder_info = self._make_request("disk.folder.get", {"id": folder_id})
+                if folder_info.get("result"):
+                    real_folder_id = folder_info["result"].get("ID") or folder_info["result"].get("id") or folder_id
+                    logger.debug(f"Получен реальный ID папки: {real_folder_id}")
+                else:
+                    real_folder_id = folder_id
+            except:
+                real_folder_id = folder_id
+            
             upload_data_v2 = {
-                "id": folder_id,
-                "data": {
-                    "NAME": filename
-                },
+                "id": real_folder_id,
+                "data[NAME]": filename,
                 "fileContent": file_base64
             }
             
@@ -439,15 +503,24 @@ class Bitrix24Client:
                     for folder in folders:
                         if isinstance(folder, dict):
                             name = folder.get("NAME", "")
-                            if name == "Общие файлы" or name == "shared_files" or folder.get("ID") == "shared_files":
-                                folder_id = folder.get("ID")
-                                logger.debug(f"Найден ID папки shared_files: {folder_id}")
+                            folder_id = folder.get("ID")
+                            # Ищем папку "Общие файлы" или "shared_files"
+                            if (name == "Общие файлы" or name == "shared_files" or 
+                                folder_id == "shared_files" or 
+                                "общие" in name.lower() or "shared" in name.lower()):
+                                logger.debug(f"Найден ID папки shared_files: {folder_id} (имя: {name})")
                                 return folder_id
                 elif isinstance(folders, dict):
                     # Если результат - одна папка
-                    if folders.get("NAME") == "Общие файлы" or folders.get("ID") == "shared_files":
-                        return folders.get("ID")
+                    name = folders.get("NAME", "")
+                    folder_id = folders.get("ID")
+                    if (name == "Общие файлы" or name == "shared_files" or 
+                        folder_id == "shared_files" or
+                        "общие" in name.lower() or "shared" in name.lower()):
+                        logger.debug(f"Найден ID папки shared_files: {folder_id} (имя: {name})")
+                        return folder_id
             
+            logger.debug("Папка shared_files не найдена в списке папок диска")
             return None
         except Exception as e:
             logger.debug(f"Ошибка при получении ID папки shared_files: {e}")
@@ -455,41 +528,113 @@ class Bitrix24Client:
     
     def _upload_file_alternative(self, file_content: bytes, filename: str, folder_id: str) -> Optional[int]:
         """
-        Старый альтернативный способ загрузки файла (fallback)
+        Альтернативный способ загрузки файла через disk.folder.uploadfile с правильным форматом
         """
         try:
             import base64
             
             file_base64 = base64.b64encode(file_content).decode('utf-8')
             
-            # Старый формат - пробуем как есть
+            # Используем плоский формат data[NAME] вместо вложенного объекта
+            # Это правильный формат для Bitrix24 API
             upload_data = {
                 "id": folder_id,
-                "data": {
-                    "NAME": filename
-                },
+                "data[NAME]": filename,
                 "fileContent": file_base64
             }
             
-            result = self._make_request("disk.folder.uploadfile", upload_data)
-            
-            if result.get("result"):
-                file_data = result["result"]
-                file_id = None
-                if isinstance(file_data, dict):
-                    file_id = file_data.get("ID") or file_data.get("id")
-                elif isinstance(file_data, (int, str)):
-                    file_id = file_data
+            try:
+                result = self._make_request("disk.folder.uploadfile", upload_data)
                 
-                if file_id:
-                    logger.info(f"✅ Файл {filename} успешно загружен через старый метод (ID: {file_id})")
-                    return int(file_id)
+                if result.get("result"):
+                    file_data = result["result"]
+                    file_id = None
+                    if isinstance(file_data, dict):
+                        file_id = file_data.get("ID") or file_data.get("id")
+                    elif isinstance(file_data, (int, str)):
+                        file_id = file_data
+                    
+                    if file_id:
+                        logger.info(f"✅ Файл {filename} успешно загружен через альтернативный метод (ID: {file_id})")
+                        return int(file_id)
+                
+                # Логируем ошибку из ответа API
+                error = result.get("error", "")
+                error_description = result.get("error_description", "")
+                if error:
+                    logger.warning(f"⚠️ Альтернативный метод вернул ошибку: {error} - {error_description}")
+                
+            except requests.exceptions.HTTPError as http_err:
+                # Обрабатываем HTTP ошибки отдельно для лучшей диагностики
+                if http_err.response.status_code == 400:
+                    try:
+                        error_json = http_err.response.json()
+                        error_code = error_json.get("error", "")
+                        error_description = error_json.get("error_description", "")
+                        logger.warning(f"⚠️ Ошибка 400 при загрузке файла {filename}: {error_code} - {error_description}")
+                        logger.info(f"💡 Возможные причины:")
+                        logger.info(f"   1. Неправильный формат данных (проверьте формат data[NAME])")
+                        logger.info(f"   2. Папка с ID '{folder_id}' не существует или недоступна")
+                        logger.info(f"   3. Вебхук не имеет прав на загрузку файлов (disk.folder.uploadfile)")
+                        logger.info(f"   4. Файл слишком большой или имеет неподдерживаемый формат")
+                    except:
+                        logger.warning(f"⚠️ Ошибка 400 при загрузке файла {filename}: {http_err}")
+                else:
+                    raise
             
-            logger.warning(f"⚠️ Все методы загрузки файла {filename} не сработали")
             return None
             
         except Exception as e:
             logger.error(f"Ошибка при альтернативной загрузке файла {filename}: {e}", exc_info=True)
+            return None
+    
+    def _upload_file_via_disk_file_uploadfile(self, file_content: bytes, filename: str, folder_id: str) -> Optional[int]:
+        """
+        Альтернативный способ загрузки файла через disk.file.uploadfile
+        Этот метод может работать, когда disk.folder.uploadfile не работает
+        """
+        try:
+            import base64
+            
+            file_base64 = base64.b64encode(file_content).decode('utf-8')
+            
+            # Метод disk.file.uploadfile требует немного другой формат
+            # Пробуем разные варианты
+            upload_data_v1 = {
+                "id": folder_id,
+                "data[NAME]": filename,
+                "fileContent": file_base64
+            }
+            
+            try:
+                result = self._make_request("disk.file.uploadfile", upload_data_v1)
+                
+                if result.get("result"):
+                    file_data = result["result"]
+                    file_id = None
+                    if isinstance(file_data, dict):
+                        file_id = file_data.get("ID") or file_data.get("id")
+                    elif isinstance(file_data, (int, str)):
+                        file_id = file_data
+                    
+                    if file_id:
+                        logger.info(f"✅ Файл {filename} успешно загружен через disk.file.uploadfile (ID: {file_id})")
+                        return int(file_id)
+                
+                error = result.get("error", "")
+                error_description = result.get("error_description", "")
+                if error:
+                    logger.debug(f"disk.file.uploadfile вернул ошибку: {error} - {error_description}")
+            except requests.exceptions.HTTPError as http_err:
+                if http_err.response.status_code == 400:
+                    logger.debug(f"disk.file.uploadfile вернул ошибку 400: {http_err}")
+                else:
+                    raise
+            
+            return None
+            
+        except Exception as e:
+            logger.debug(f"Ошибка при загрузке файла {filename} через disk.file.uploadfile: {e}")
             return None
     
     def get_user_by_id(self, user_id: int) -> Optional[Dict]:
