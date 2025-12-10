@@ -3,10 +3,11 @@
 """
 import os
 import logging
+import json
 import psycopg2
-from psycopg2.extras import RealDictCursor
+from psycopg2.extras import RealDictCursor, Json
 from psycopg2.pool import ThreadedConnectionPool
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Any
 from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
@@ -161,6 +162,21 @@ def init_database():
                     )
                 """)
                 
+                # Таблица для хранения всех данных исходящих вебхуков от Bitrix24
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS webhook_events (
+                        id SERIAL PRIMARY KEY,
+                        event VARCHAR(100) NOT NULL,
+                        event_handler_id VARCHAR(50),
+                        received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        data_json JSONB NOT NULL,
+                        ts VARCHAR(50),
+                        auth_domain VARCHAR(255),
+                        auth_member_id VARCHAR(255),
+                        auth_application_token VARCHAR(255)
+                    )
+                """)
+                
                 # Создаем индексы для быстрого поиска
                 cur.execute("""
                     CREATE INDEX IF NOT EXISTS idx_telegram_to_bitrix_bitrix_id 
@@ -180,6 +196,16 @@ def init_database():
                 cur.execute("""
                     CREATE INDEX IF NOT EXISTS idx_task_notifications_task_id 
                     ON task_notifications(task_id)
+                """)
+                
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_webhook_events_event 
+                    ON webhook_events(event)
+                """)
+                
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_webhook_events_received_at 
+                    ON webhook_events(received_at)
                 """)
                 
                 conn.commit()
@@ -470,4 +496,95 @@ def get_notification_history(task_id: int = None, notification_type: str = None,
                 return cur.fetchall()
     except Exception as e:
         logger.debug(f"Ошибка при получении истории уведомлений: {e}")
+        return []
+
+
+# Функции для работы с данными вебхуков
+
+def save_webhook_event(event: str, data: Dict[str, Any], event_handler_id: str = None, ts: str = None) -> bool:
+    """
+    Сохранение полного массива данных исходящего вебхука от Bitrix24
+    
+    Args:
+        event: Тип события (например, ONTASKUPDATE, ONTASKCOMMENTADD)
+        data: Полный словарь данных вебхука (включая data, auth и другие поля)
+        event_handler_id: ID обработчика события (опционально)
+        ts: Timestamp события (опционально)
+        
+    Returns:
+        True если данные успешно сохранены, False в противном случае
+    """
+    if _connection_pool is None:
+        logger.warning("⚠️ Пул соединений PostgreSQL не инициализирован. Не удалось сохранить данные вебхука.")
+        return False
+    
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                # Извлекаем данные из auth для удобного поиска
+                auth_data = data.get('auth', {}) if isinstance(data.get('auth'), dict) else {}
+                auth_domain = auth_data.get('domain')
+                auth_member_id = auth_data.get('member_id')
+                auth_application_token = auth_data.get('application_token')
+                
+                # Сохраняем полный массив данных как JSONB
+                cur.execute("""
+                    INSERT INTO webhook_events (
+                        event, 
+                        event_handler_id, 
+                        data_json, 
+                        ts, 
+                        auth_domain, 
+                        auth_member_id, 
+                        auth_application_token
+                    )
+                    VALUES (%s, %s, %s::jsonb, %s, %s, %s, %s)
+                """, (
+                    event,
+                    event_handler_id,
+                    Json(data),  # Используем Json адаптер для правильной сериализации
+                    ts,
+                    auth_domain,
+                    auth_member_id,
+                    auth_application_token
+                ))
+                conn.commit()
+                logger.debug(f"✅ Данные вебхука сохранены в БД: событие {event}")
+                return True
+    except Exception as e:
+        logger.error(f"❌ Ошибка при сохранении данных вебхука в БД: {e}", exc_info=True)
+        return False
+
+
+def get_webhook_events(event: str = None, limit: int = 100, offset: int = 0) -> List[Dict]:
+    """
+    Получение истории вебхуков из базы данных
+    
+    Args:
+        event: Фильтр по типу события (опционально)
+        limit: Максимальное количество записей
+        offset: Смещение для пагинации
+        
+    Returns:
+        Список словарей с данными вебхуков
+    """
+    if _connection_pool is None:
+        return []
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                query = "SELECT * FROM webhook_events WHERE 1=1"
+                params = []
+                
+                if event:
+                    query += " AND event = %s"
+                    params.append(event)
+                
+                query += " ORDER BY received_at DESC LIMIT %s OFFSET %s"
+                params.extend([limit, offset])
+                
+                cur.execute(query, params)
+                return cur.fetchall()
+    except Exception as e:
+        logger.debug(f"Ошибка при получении истории вебхуков: {e}")
         return []
