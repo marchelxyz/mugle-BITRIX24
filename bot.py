@@ -2760,8 +2760,8 @@ def main():
                         elif 'TASK' in event.upper():
                             event_upper = event.upper()
                             
-                            # События задач: ONTASKADD, ONTASKUPDATE, ONTASKDELETE
-                            if 'ONTASKADD' in event_upper or 'ONTASKUPDATE' in event_upper or 'ONTASKDELETE' in event_upper:
+                            # События задач: ONTASKUPDATE, ONTASKDELETE (ONTASKADD пропускаем - уведомления уже отправляются при создании)
+                            if 'ONTASKUPDATE' in event_upper or 'ONTASKDELETE' in event_upper:
                                 logger.info(f"📋 Получено событие задачи: {event}")
                                 
                                 # Извлекаем данные задачи
@@ -2803,14 +2803,19 @@ def main():
                                         logger.info(f"💡 Проверьте, что TELEGRAM_SUPERGROUP_ID установлен в переменных окружения")
                                     else:
                                         # Отправляем уведомления о задачах через TaskNotificationService
+                                        # Передаем auth данные для получения полной информации через REST API
                                         try:
                                             logger.info(f"📤 Отправка уведомления о событии {event} для задачи {task_id}...")
-                                            await task_notification_service.handle_task_event(event, task_data)
+                                            auth_data = data.get('auth', {})
+                                            await task_notification_service.handle_task_event(event, task_data, auth_data)
                                             logger.info(f"✅ Обработано событие задачи {task_id}: {event}")
                                         except Exception as notif_error:
                                             logger.error(f"❌ Ошибка при обработке уведомления о задаче {task_id}: {notif_error}", exc_info=True)
                                 else:
                                     logger.warning(f"⚠️ Не удалось извлечь данные задачи из события {event}: {data_obj}")
+                            elif 'ONTASKADD' in event_upper:
+                                # Пропускаем уведомления о созданных задачах (они уже отправляются при создании)
+                                logger.debug(f"Пропускаем событие ONTASKADD (уведомления уже отправляются при создании задачи)")
                             
                             # События комментариев: ONTASKCOMMENTADD, ONTASKCOMMENTUPDATE, ONTASKCOMMENTDELETE
                             elif 'ONTASKCOMMENT' in event_upper:
