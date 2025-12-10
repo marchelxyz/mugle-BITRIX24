@@ -1367,8 +1367,13 @@ async def handle_reply_with_mention(update: Update, context: ContextTypes.DEFAUL
     message_text += "Нажмите кнопку ниже, чтобы открыть форму создания задачи:"
     
     logger.info(f"Отправка сообщения с кнопкой создания задачи в чат {message.chat_id}")
-    await message.reply_text(message_text, reply_markup=keyboard)
+    proposal_message = await message.reply_text(message_text, reply_markup=keyboard)
     logger.info("Сообщение с кнопкой успешно отправлено")
+    
+    # Сохраняем ID сообщения "Предложение создать задачу" для последующего удаления
+    if proposal_message and proposal_message.message_id:
+        context.bot_data[f"miniapp_session_{session_token}"]["proposal_message_id"] = proposal_message.message_id
+        logger.info(f"Сохранен ID сообщения 'Предложение создать задачу': {proposal_message.message_id}")
 
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -1956,6 +1961,19 @@ def main():
                             # Отправляем сообщение в чат с ссылкой на задачу
                             chat_id = session_data.get('chat_id')
                             message_id = session_data.get('message_id')
+                            proposal_message_id = session_data.get('proposal_message_id')
+                            
+                            # Удаляем сообщение "Предложение создать задачу", если оно было сохранено
+                            if chat_id and proposal_message_id:
+                                try:
+                                    await application.bot.delete_message(
+                                        chat_id=chat_id,
+                                        message_id=proposal_message_id
+                                    )
+                                    logger.info(f"Сообщение 'Предложение создать задачу' (ID: {proposal_message_id}) успешно удалено")
+                                except Exception as delete_error:
+                                    logger.warning(f"Не удалось удалить сообщение 'Предложение создать задачу': {delete_error}")
+                                    # Продолжаем работу, даже если не удалось удалить сообщение
                             
                             if chat_id:
                                 try:
