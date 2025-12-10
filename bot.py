@@ -2431,6 +2431,13 @@ def main():
                         
                         # Проверка токена исходящего вебхука (для безопасности)
                         outgoing_webhook_token = os.getenv("BITRIX24_OUTGOING_WEBHOOK_TOKEN")
+                        
+                        # Логируем информацию для диагностики
+                        if not outgoing_webhook_token:
+                            logger.warning("⚠️ BITRIX24_OUTGOING_WEBHOOK_TOKEN не установлен в переменных окружения. Проверка токена пропущена.")
+                        else:
+                            logger.debug(f"🔑 BITRIX24_OUTGOING_WEBHOOK_TOKEN установлен (первые 10 символов): {outgoing_webhook_token[:10]}...")
+                        
                         if outgoing_webhook_token:
                             # Bitrix24 может отправлять токен в заголовке, параметрах запроса или в теле
                             # Проверяем заголовок X-Bitrix-Token или параметр token
@@ -2441,10 +2448,26 @@ def main():
                             if isinstance(data, dict):
                                 token_from_body = data.get('token') or data.get('auth', {}).get('token') if isinstance(data.get('auth'), dict) else None
                             
+                            # Дополнительная диагностика: проверяем все возможные заголовки с токеном
+                            all_headers_with_token = {k: v for k, v in request.headers.items() if 'token' in k.lower() or 'auth' in k.lower()}
+                            if all_headers_with_token:
+                                logger.debug(f"🔍 Заголовки с 'token' или 'auth': {all_headers_with_token}")
+                            
                             received_token = token_from_header or token_from_query or token_from_body
+                            
+                            # Подробное логирование для диагностики
+                            logger.debug(f"🔍 Поиск токена:")
+                            logger.debug(f"   - Из заголовка X-Bitrix-Token: {token_from_header[:10] if token_from_header else 'None'}...")
+                            logger.debug(f"   - Из заголовка Authorization: {request.headers.get('Authorization', 'None')[:20] if request.headers.get('Authorization') else 'None'}...")
+                            logger.debug(f"   - Из параметра URL token: {token_from_query[:10] if token_from_query else 'None'}...")
+                            logger.debug(f"   - Из тела запроса data.token: {token_from_body[:10] if token_from_body else 'None'}...")
+                            logger.debug(f"   - Найденный токен: {received_token[:10] if received_token else 'None'}...")
                             
                             if not received_token or received_token != outgoing_webhook_token:
                                 logger.warning(f"⚠️ Неверный токен исходящего вебхука. Получен: {received_token[:10] if received_token else 'None'}...")
+                                logger.warning(f"⚠️ Ожидаемый токен (первые 10 символов): {outgoing_webhook_token[:10]}...")
+                                logger.warning(f"⚠️ Все заголовки запроса: {dict(request.headers)}")
+                                logger.warning(f"⚠️ Параметры URL: {dict(request.query)}")
                                 return web.json_response({'status': 'error', 'message': 'Invalid token'}, status=403)
                             
                             logger.debug("✅ Токен исходящего вебхука проверен успешно")
