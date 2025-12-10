@@ -126,82 +126,111 @@ class Bitrix24Client:
             # Если в вашем Bitrix24 используется другое поле, замените GROUP_ID на нужное
             task_data["fields"]["GROUP_ID"] = department_id
         
-        # Если файлы переданы напрямую, пробуем прикрепить их при создании задачи
-        if files and not file_ids:
-            logger.info(f"Попытка прямого прикрепления {len(files)} файлов к задаче при создании")
-            result = self._create_task_with_files(task_data, files)
-            if result:
-                return result
-            logger.warning("Прямое прикрепление файлов не сработало, пробуем загрузить на диск")
-            # Если прямой способ не сработал, загружаем файлы на диск
-            file_ids = []
-            for filename, file_content in files:
-                file_id = self.upload_file(file_content, filename)
-                if file_id:
-                    file_ids.append(file_id)
-        
-        # Прикрепляем файлы через ID (если они были загружены на диск)
-        if file_ids:
-            logger.info(f"Прикрепление {len(file_ids)} файлов к задаче через ID")
-            # Пробуем разные форматы для прикрепления файлов
-            # Формат 1: UF_TASK_WEBDAV_FILES (стандартный)
-            task_data["fields"]["UF_TASK_WEBDAV_FILES"] = file_ids
-            # Также пробуем FILES (альтернативный формат)
-            # task_data["fields"]["FILES"] = file_ids
-        
+        # Сначала создаем задачу без файлов
         result = self._make_request("tasks.task.add", task_data)
+        
+        # Если задача создана успешно и есть файлы для прикрепления
+        if result.get("result") and result["result"].get("task"):
+            task_id = result["result"]["task"]["id"]
+            
+            # Если файлы переданы напрямую, загружаем их на диск
+            if files and not file_ids:
+                logger.info(f"Загрузка {len(files)} файлов на диск для прикрепления к задаче {task_id}")
+                file_ids = []
+                for filename, file_content in files:
+                    file_id = self.upload_file(file_content, filename)
+                    if file_id:
+                        file_ids.append(file_id)
+                        logger.info(f"✅ Файл {filename} загружен на диск (ID: {file_id})")
+                    else:
+                        logger.warning(f"⚠️ Не удалось загрузить файл {filename} на диск")
+            
+            # Прикрепляем файлы к задаче через tasks.task.update
+            if file_ids:
+                logger.info(f"Прикрепление {len(file_ids)} файлов к задаче {task_id} через tasks.task.update")
+                attach_result = self._attach_files_to_task(task_id, file_ids)
+                if attach_result:
+                    logger.info(f"✅ Файлы успешно прикреплены к задаче {task_id}")
+                else:
+                    logger.warning(f"⚠️ Не удалось прикрепить файлы к задаче {task_id}, но задача создана")
+        
         return result
     
-    def _create_task_with_files(self, task_data: Dict, files: List[tuple]) -> Optional[Dict]:
+    def _attach_files_to_task(self, task_id: int, file_ids: List[int]) -> bool:
         """
-        Создание задачи с прямым прикреплением файлов через multipart/form-data
+        Прикрепление файлов к существующей задаче через tasks.task.update
         
-        В Bitrix24 файлы можно прикрепить напрямую к задаче при создании через поле FILES
+        Args:
+            task_id: ID задачи
+            file_ids: Список ID файлов, загруженных на диск
+            
+        Returns:
+            True если файлы успешно прикреплены, False в противном случае
         """
+        if not file_ids:
+            logger.warning("Список ID файлов пуст, нечего прикреплять")
+            return False
+        
         try:
-            url = f"{self.base_url}/tasks.task.add"
+            # Пробуем разные форматы для прикрепления файлов
+            # Формат 1: UF_TASK_WEBDAV_FILES (стандартный формат Bitrix24)
+            # В Bitrix24 файлы прикрепляются через пользовательское поле UF_TASK_WEBDAV_FILES
+            # Это поле содержит массив ID файлов из диска
+            update_data = {
+                "taskId": task_id,
+                "fields": {
+                    "UF_TASK_WEBDAV_FILES": file_ids
+                }
+            }
             
-            # Подготавливаем данные задачи в формате для multipart
-            form_data = {}
-            for key, value in task_data.get("fields", {}).items():
-                if isinstance(value, list):
-                    # Для массивов (например, ACCOMPLICES) передаем каждый элемент отдельно
-                    for i, item in enumerate(value):
-                        form_data[f"fields[{key}][{i}]"] = str(item)
-                else:
-                    form_data[f"fields[{key}]"] = str(value)
-            
-            # Подготавливаем файлы для multipart
-            # В Bitrix24 файлы передаются через поле FILES с индексами
-            files_dict = {}
-            for i, (filename, file_content) in enumerate(files):
-                # Определяем MIME тип по расширению файла
-                import mimetypes
-                mime_type, _ = mimetypes.guess_type(filename)
-                if not mime_type:
-                    mime_type = 'application/octet-stream'
-                
-                files_dict[f"FILES[{i}]"] = (filename, file_content, mime_type)
-            
-            logger.debug(f"Попытка создания задачи с {len(files)} файлами через multipart/form-data")
-            response = requests.post(url, data=form_data, files=files_dict)
-            response.raise_for_status()
-            result = response.json()
+            logger.info(f"Попытка прикрепления {len(file_ids)} файлов к задаче {task_id} через UF_TASK_WEBDAV_FILES")
+            logger.debug(f"Данные запроса: {update_data}")
+            result = self._make_request("tasks.task.update", update_data)
             
             if result.get("result"):
-                logger.info(f"✅ Задача создана с прямым прикреплением {len(files)} файлов")
-                return result
+                logger.info(f"✅ Файлы успешно прикреплены к задаче {task_id} через UF_TASK_WEBDAV_FILES")
+                return True
             
+            # Если первый формат не сработал, логируем ошибку и пробуем альтернативные форматы
             error = result.get("error", "")
             error_description = result.get("error_description", "")
             if error:
-                logger.debug(f"Ошибка при создании задачи с файлами: {error} - {error_description}")
+                logger.warning(f"Формат UF_TASK_WEBDAV_FILES не сработал: {error} - {error_description}")
             
-            return None
+            # Формат 2: Пробуем через disk.file.attach для каждого файла отдельно
+            # Это более надежный способ прикрепления файлов к задачам
+            logger.info(f"Попытка прикрепления файлов к задаче {task_id} через disk.file.attach")
+            attached_count = 0
+            for file_id in file_ids:
+                try:
+                    attach_data = {
+                        "id": file_id,
+                        "entityType": "tasks",
+                        "entityId": task_id
+                    }
+                    logger.debug(f"Прикрепление файла {file_id} к задаче {task_id}")
+                    attach_result = self._make_request("disk.file.attach", attach_data)
+                    
+                    if attach_result.get("result"):
+                        attached_count += 1
+                        logger.info(f"✅ Файл {file_id} успешно прикреплен к задаче {task_id}")
+                    else:
+                        error = attach_result.get("error", "")
+                        error_description = attach_result.get("error_description", "")
+                        logger.warning(f"⚠️ Не удалось прикрепить файл {file_id}: {error} - {error_description}")
+                except Exception as e:
+                    logger.error(f"Ошибка при прикреплении файла {file_id}: {e}", exc_info=True)
+            
+            if attached_count > 0:
+                logger.info(f"✅ Успешно прикреплено {attached_count} из {len(file_ids)} файлов к задаче {task_id}")
+                return True
+            else:
+                logger.error(f"❌ Не удалось прикрепить ни один файл к задаче {task_id}")
+                return False
             
         except Exception as e:
-            logger.debug(f"Ошибка при прямом прикреплении файлов к задаче: {e}")
-            return None
+            logger.error(f"Ошибка при прикреплении файлов к задаче {task_id}: {e}", exc_info=True)
+            return False
     
     def upload_file(self, file_content: bytes, filename: str, folder_id: str = "shared_files") -> Optional[int]:
         """

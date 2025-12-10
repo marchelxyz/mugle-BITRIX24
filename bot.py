@@ -1899,13 +1899,39 @@ def main():
                             # Получаем файлы
                             files = []
                             files_count = int(data.get('files_count', 0))
+                            logger.info(f"Обработка {files_count} файлов из multipart/form-data")
+                            
                             for i in range(files_count):
                                 file_field = data.get(f'file_{i}')
-                                if file_field and hasattr(file_field, 'file'):
-                                    # aiohttp возвращает FileField объект
-                                    file_content = file_field.file.read()
-                                    filename = file_field.filename
-                                    files.append((filename, file_content))
+                                if file_field:
+                                    try:
+                                        # aiohttp возвращает FileField объект
+                                        # Проверяем разные способы доступа к файлу
+                                        if hasattr(file_field, 'file'):
+                                            # Стандартный способ для aiohttp FileField
+                                            file_content = await file_field.read() if hasattr(file_field, 'read') else file_field.file.read()
+                                            filename = getattr(file_field, 'filename', f'file_{i}')
+                                        elif hasattr(file_field, 'read'):
+                                            # Если это файловый объект напрямую
+                                            file_content = await file_field.read() if hasattr(file_field.read, '__call__') else file_field.read()
+                                            filename = getattr(file_field, 'filename', f'file_{i}')
+                                        else:
+                                            # Если это уже bytes
+                                            file_content = file_field
+                                            filename = f'file_{i}'
+                                        
+                                        # Убеждаемся, что file_content это bytes
+                                        if isinstance(file_content, str):
+                                            file_content = file_content.encode('utf-8')
+                                        
+                                        files.append((filename, file_content))
+                                        logger.info(f"✅ Файл {i+1}/{files_count} получен: {filename} (размер: {len(file_content)} байт)")
+                                    except Exception as e:
+                                        logger.error(f"Ошибка при обработке файла {i}: {e}", exc_info=True)
+                                else:
+                                    logger.warning(f"Файл file_{i} не найден в данных запроса")
+                            
+                            logger.info(f"Всего обработано файлов: {len(files)}")
                             
                             # Получаем остальные данные
                             token = data.get('token')
