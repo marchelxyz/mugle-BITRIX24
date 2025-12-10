@@ -2562,6 +2562,108 @@ def main():
                         
                         logger.info(f"Получено событие от Bitrix24: {event}")
                         
+                        # ============================================================
+                        # ПОДРОБНОЕ ЛОГИРОВАНИЕ ПОЛНОГО МАССИВА ДАННЫХ ВЕБХУКА
+                        # ============================================================
+                        import json
+                        logger.info("=" * 80)
+                        logger.info("📦 ПОЛНЫЙ МАССИВ ДАННЫХ ИСХОДЯЩЕГО ВЕБХУКА BITRIX24")
+                        logger.info("=" * 80)
+                        logger.info(f"📋 Тип события: {event}")
+                        logger.info(f"🆔 ID обработчика события: {event_handler_id}")
+                        logger.info(f"⏰ Timestamp: {ts}")
+                        
+                        # Логируем данные авторизации
+                        auth_data = data.get('auth', {})
+                        if auth_data:
+                            logger.info("🔐 Данные авторизации (auth):")
+                            logger.info(f"   - domain: {auth_data.get('domain')}")
+                            logger.info(f"   - client_endpoint: {auth_data.get('client_endpoint')}")
+                            logger.info(f"   - server_endpoint: {auth_data.get('server_endpoint')}")
+                            logger.info(f"   - member_id: {auth_data.get('member_id')}")
+                            logger.info(f"   - application_token: {auth_data.get('application_token', '')[:20]}...")
+                        
+                        # Логируем полную структуру data
+                        logger.info("📊 Структура данных (data):")
+                        if isinstance(data_obj, dict):
+                            logger.info(f"   Тип: словарь (dict)")
+                            logger.info(f"   Ключи верхнего уровня: {list(data_obj.keys())}")
+                            
+                            # Проверяем FIELDS_BEFORE и FIELDS_AFTER
+                            if 'FIELDS_BEFORE' in data_obj:
+                                fields_before = data_obj['FIELDS_BEFORE']
+                                logger.info("   📥 FIELDS_BEFORE (данные до изменения):")
+                                if isinstance(fields_before, dict):
+                                    logger.info(f"      Ключи: {list(fields_before.keys())}")
+                                    # Логируем важные поля задачи
+                                    if 'ID' in fields_before:
+                                        logger.info(f"      ID задачи: {fields_before.get('ID')}")
+                                    if 'CREATED_BY' in fields_before:
+                                        logger.info(f"      CREATED_BY (создатель): {fields_before.get('CREATED_BY')}")
+                                    if 'RESPONSIBLE_ID' in fields_before:
+                                        logger.info(f"      RESPONSIBLE_ID (исполнитель): {fields_before.get('RESPONSIBLE_ID')}")
+                                    if 'TITLE' in fields_before:
+                                        logger.info(f"      TITLE: {fields_before.get('TITLE')}")
+                                    logger.info(f"      Полные данные FIELDS_BEFORE: {json.dumps(fields_before, ensure_ascii=False, indent=2)}")
+                                else:
+                                    logger.info(f"      Значение: {fields_before}")
+                            
+                            if 'FIELDS_AFTER' in data_obj:
+                                fields_after = data_obj['FIELDS_AFTER']
+                                logger.info("   📤 FIELDS_AFTER (данные после изменения):")
+                                if isinstance(fields_after, dict):
+                                    logger.info(f"      Ключи: {list(fields_after.keys())}")
+                                    # Логируем важные поля задачи
+                                    if 'ID' in fields_after:
+                                        logger.info(f"      ID задачи: {fields_after.get('ID')}")
+                                    if 'CREATED_BY' in fields_after:
+                                        logger.info(f"      CREATED_BY (создатель): {fields_after.get('CREATED_BY')}")
+                                    if 'RESPONSIBLE_ID' in fields_after:
+                                        logger.info(f"      RESPONSIBLE_ID (исполнитель): {fields_after.get('RESPONSIBLE_ID')}")
+                                    if 'TASK_ID' in fields_after:
+                                        logger.info(f"      TASK_ID (для комментариев): {fields_after.get('TASK_ID')}")
+                                    if 'AUTHOR_ID' in fields_after:
+                                        logger.info(f"      AUTHOR_ID (автор комментария): {fields_after.get('AUTHOR_ID')}")
+                                    if 'TITLE' in fields_after:
+                                        logger.info(f"      TITLE: {fields_after.get('TITLE')}")
+                                    logger.info(f"      Полные данные FIELDS_AFTER: {json.dumps(fields_after, ensure_ascii=False, indent=2)}")
+                                else:
+                                    logger.info(f"      Значение: {fields_after}")
+                            
+                            # Проверяем другие поля в data
+                            for key in ['IS_ACCESSIBLE_BEFORE', 'IS_ACCESSIBLE_AFTER', 'FIELDS']:
+                                if key in data_obj:
+                                    logger.info(f"   {key}: {data_obj[key]}")
+                            
+                            # Если есть прямые поля задачи в data_obj
+                            if 'ID' in data_obj and 'FIELDS_AFTER' not in data_obj and 'FIELDS_BEFORE' not in data_obj:
+                                logger.info("   Данные задачи напрямую в data:")
+                                logger.info(f"      Полные данные: {json.dumps(data_obj, ensure_ascii=False, indent=2)}")
+                        elif isinstance(data_obj, list):
+                            logger.info(f"   Тип: список (list), длина: {len(data_obj)}")
+                            if len(data_obj) > 0:
+                                logger.info(f"   Первый элемент: {json.dumps(data_obj[0], ensure_ascii=False, indent=2)}")
+                        else:
+                            logger.info(f"   Тип: {type(data_obj)}, значение: {data_obj}")
+                        
+                        # Логируем полный JSON всего вебхука
+                        logger.info("=" * 80)
+                        logger.info("📄 ПОЛНЫЙ JSON ВЕБХУКА:")
+                        logger.info("=" * 80)
+                        try:
+                            full_json = json.dumps(data, ensure_ascii=False, indent=2)
+                            # Разбиваем на части если слишком длинный
+                            if len(full_json) > 5000:
+                                logger.info(full_json[:5000])
+                                logger.info("... (данные обрезаны, полные данные в БД)")
+                            else:
+                                logger.info(full_json)
+                        except Exception as json_err:
+                            logger.warning(f"Не удалось сериализовать данные в JSON: {json_err}")
+                            logger.info(f"Данные в виде строки: {str(data)[:2000]}")
+                        
+                        logger.info("=" * 80)
+                        
                         # Сохраняем полный массив данных вебхука в базу данных
                         if DATABASE_AVAILABLE:
                             try:
@@ -2684,6 +2786,13 @@ def main():
                                 if task_data:
                                     task_id = task_data.get('ID') or task_data.get('id')
                                     logger.info(f"🔍 Обработка события задачи {task_id}: {event}")
+                                    
+                                    # Логируем информацию о создателе и исполнителе
+                                    created_by = task_data.get('CREATED_BY') or task_data.get('createdBy') or task_data.get('CREATEDBY')
+                                    responsible_id = task_data.get('RESPONSIBLE_ID') or task_data.get('responsibleId') or task_data.get('RESPONSIBLEID')
+                                    logger.info(f"👤 Создатель задачи (CREATED_BY): {created_by}")
+                                    logger.info(f"👷 Исполнитель задачи (RESPONSIBLE_ID): {responsible_id}")
+                                    logger.info(f"📋 Все доступные поля задачи: {list(task_data.keys())}")
                                     logger.debug(f"Данные задачи: {task_data}")
                                     
                                     # Проверяем доступность сервиса уведомлений
@@ -2729,7 +2838,10 @@ def main():
                                 if comment_data:
                                     task_id = comment_data.get('TASK_ID') or comment_data.get('taskId') or comment_data.get('TASKID')
                                     comment_id = comment_data.get('ID') or comment_data.get('id')
+                                    author_id = comment_data.get('AUTHOR_ID') or comment_data.get('authorId') or comment_data.get('AUTHORID')
                                     logger.info(f"💬 Обработка события комментария {comment_id} к задаче {task_id}: {event}")
+                                    logger.info(f"✍️ Автор комментария (AUTHOR_ID): {author_id}")
+                                    logger.info(f"📋 Все доступные поля комментария: {list(comment_data.keys())}")
                                     logger.debug(f"Данные комментария: {comment_data}")
                                     
                                     # Проверяем доступность сервиса уведомлений
