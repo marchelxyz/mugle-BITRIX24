@@ -1744,14 +1744,14 @@ class Bitrix24Client:
                     for task_id, task_data in tasks.items():
                         formatted_task = {
                             "id": task_id,
-                            "title": task_data.get("TITLE", ""),
-                            "description": task_data.get("DESCRIPTION", ""),
-                            "deadline": task_data.get("DEADLINE"),
-                            "status": task_data.get("STATUS"),
-                            "responsibleId": task_data.get("RESPONSIBLE_ID"),
-                            "createdBy": task_data.get("CREATED_BY"),
-                            "createdDate": task_data.get("CREATED_DATE"),
-                            "changedDate": task_data.get("CHANGED_DATE")
+                            "title": self._get_task_field(task_data, ['title', 'TITLE', 'Title'], ""),
+                            "description": self._get_task_field(task_data, ['description', 'DESCRIPTION', 'Description'], ""),
+                            "deadline": self._get_task_field(task_data, ['deadline', 'DEADLINE', 'Deadline']),
+                            "status": self._get_task_field(task_data, ['status', 'STATUS', 'Status']),
+                            "responsibleId": self._get_task_field(task_data, ['responsibleId', 'RESPONSIBLE_ID', 'responsible_id', 'RESPONSIBLEID']),
+                            "createdBy": self._get_task_field(task_data, ['createdBy', 'CREATED_BY', 'created_by', 'CREATEDBY']),
+                            "createdDate": self._get_task_field(task_data, ['createdDate', 'CREATED_DATE', 'created_date', 'CREATEDDATE']),
+                            "changedDate": self._get_task_field(task_data, ['changedDate', 'CHANGED_DATE', 'changed_date', 'CHANGEDDATE'])
                         }
                         formatted_tasks.append(formatted_task)
                 elif isinstance(tasks, list):
@@ -1761,14 +1761,14 @@ class Bitrix24Client:
                         if task_id:
                             formatted_task = {
                                 "id": task_id,
-                                "title": task_data.get("TITLE", ""),
-                                "description": task_data.get("DESCRIPTION", ""),
-                                "deadline": task_data.get("DEADLINE"),
-                                "status": task_data.get("STATUS"),
-                                "responsibleId": task_data.get("RESPONSIBLE_ID"),
-                                "createdBy": task_data.get("CREATED_BY"),
-                                "createdDate": task_data.get("CREATED_DATE"),
-                                "changedDate": task_data.get("CHANGED_DATE")
+                                "title": self._get_task_field(task_data, ['title', 'TITLE', 'Title'], ""),
+                                "description": self._get_task_field(task_data, ['description', 'DESCRIPTION', 'Description'], ""),
+                                "deadline": self._get_task_field(task_data, ['deadline', 'DEADLINE', 'Deadline']),
+                                "status": self._get_task_field(task_data, ['status', 'STATUS', 'Status']),
+                                "responsibleId": self._get_task_field(task_data, ['responsibleId', 'RESPONSIBLE_ID', 'responsible_id', 'RESPONSIBLEID']),
+                                "createdBy": self._get_task_field(task_data, ['createdBy', 'CREATED_BY', 'created_by', 'CREATEDBY']),
+                                "createdDate": self._get_task_field(task_data, ['createdDate', 'CREATED_DATE', 'created_date', 'CREATEDDATE']),
+                                "changedDate": self._get_task_field(task_data, ['changedDate', 'CHANGED_DATE', 'changed_date', 'CHANGEDDATE'])
                             }
                             formatted_tasks.append(formatted_task)
                 
@@ -1778,6 +1778,24 @@ class Bitrix24Client:
         except Exception as e:
             logger.error(f"Ошибка при получении задач: {e}", exc_info=True)
             return []
+    
+    def _get_task_field(self, task_data: Dict, field_variants: List[str], default=None):
+        """
+        Безопасное извлечение поля задачи с поддержкой разных форматов (camelCase, UPPERCASE, snake_case)
+        
+        Args:
+            task_data: Словарь с данными задачи
+            field_variants: Список вариантов названий поля (например, ['title', 'TITLE', 'Title'])
+            default: Значение по умолчанию, если поле не найдено
+            
+        Returns:
+            Значение поля или default
+        """
+        for variant in field_variants:
+            value = task_data.get(variant)
+            if value is not None and value != "":
+                return value
+        return default
     
     def get_task_by_id(self, task_id: int) -> Optional[Dict]:
         """
@@ -1844,9 +1862,15 @@ class Bitrix24Client:
                             logger.info(f"   Все доступные ключи: {list(task_data.keys())}")
                             logger.info(f"   Полный JSON task_data (первые 2000 символов): {json.dumps(task_data, ensure_ascii=False, indent=2)[:2000]}")
                             
-                            # Проверяем разные варианты названий полей
-                            responsible_id = task_data.get("RESPONSIBLE_ID") or task_data.get("responsibleId") or task_data.get("RESPONSIBLE_ID") or task_data.get("responsible_id")
-                            created_by = task_data.get("CREATED_BY") or task_data.get("createdBy") or task_data.get("CREATED_BY") or task_data.get("created_by")
+                            # Извлекаем поля с поддержкой разных форматов (camelCase и UPPERCASE)
+                            title = self._get_task_field(task_data, ['title', 'TITLE', 'Title'], "")
+                            description = self._get_task_field(task_data, ['description', 'DESCRIPTION', 'Description'], "")
+                            deadline = self._get_task_field(task_data, ['deadline', 'DEADLINE', 'Deadline'])
+                            status = self._get_task_field(task_data, ['status', 'STATUS', 'Status'])
+                            responsible_id = self._get_task_field(task_data, ['responsibleId', 'RESPONSIBLE_ID', 'responsible_id', 'RESPONSIBLEID'])
+                            created_by = self._get_task_field(task_data, ['createdBy', 'CREATED_BY', 'created_by', 'CREATEDBY'])
+                            created_date = self._get_task_field(task_data, ['createdDate', 'CREATED_DATE', 'created_date', 'CREATEDDATE'])
+                            changed_date = self._get_task_field(task_data, ['changedDate', 'CHANGED_DATE', 'changed_date', 'CHANGEDDATE'])
                             
                             logger.info(f"🔍 ПОИСК ПОЛЕЙ ОТВЕТСТВЕННОГО И СОЗДАТЕЛЯ:")
                             logger.info(f"   RESPONSIBLE_ID (прямой): {task_data.get('RESPONSIBLE_ID')}")
@@ -1857,17 +1881,19 @@ class Bitrix24Client:
                             logger.info(f"   createdBy (camelCase): {task_data.get('createdBy')}")
                             logger.info(f"   created_by (snake_case): {task_data.get('created_by')}")
                             logger.info(f"   Найденный created_by: {created_by}")
+                            logger.info(f"   Найденный title: {title}")
+                            logger.info(f"   Найденный description: {description[:100] if description else 'None'}...")
                             
                             return {
                                 "id": task_id,
-                                "title": task_data.get("TITLE", ""),
-                                "description": task_data.get("DESCRIPTION", ""),
-                                "deadline": task_data.get("DEADLINE"),
-                                "status": task_data.get("STATUS"),
+                                "title": title,
+                                "description": description,
+                                "deadline": deadline,
+                                "status": status,
                                 "responsibleId": responsible_id,
                                 "createdBy": created_by,
-                                "createdDate": task_data.get("CREATED_DATE"),
-                                "changedDate": task_data.get("CHANGED_DATE")
+                                "createdDate": created_date,
+                                "changedDate": changed_date
                             }
                         else:
                             logger.warning(f"⚠️ task_data не является словарем: {type(task_data)}, значение: {task_data}")
