@@ -33,7 +33,7 @@ class Bitrix24Client:
         # Название поля для хранения Telegram ID (по умолчанию UF_USR_TELEGRAM, так как поле создается автоматически в Bitrix24)
         self.telegram_field_name = telegram_field_name or os.getenv("BITRIX24_TELEGRAM_FIELD_NAME", "UF_USR_TELEGRAM")
     
-    def _make_request(self, method: str, params: Dict = None, use_get: bool = False, files: Dict = None) -> Dict:
+    def _make_request(self, method: str, params: Dict = None, use_get: bool = False, files: Dict = None, use_form_data: bool = False) -> Dict:
         """
         Выполнение запроса к API Битрикс24
         
@@ -42,6 +42,7 @@ class Bitrix24Client:
             params: Параметры запроса
             use_get: Если True, использует GET запрос вместо POST
             files: Словарь файлов для multipart/form-data запроса
+            use_form_data: Если True, использует form-data вместо JSON (для методов disk.folder.uploadfile)
             
         Returns:
             Ответ от API
@@ -57,6 +58,9 @@ class Bitrix24Client:
         elif files:
             # Для POST запросов с файлами используем multipart/form-data
             response = requests.post(url, data=params, files=files)
+        elif use_form_data:
+            # Для POST запросов с form-data (например, disk.folder.uploadfile)
+            response = requests.post(url, data=params)
         else:
             # Для POST запросов параметры передаются в JSON body
             response = requests.post(url, json=params)
@@ -334,7 +338,7 @@ class Bitrix24Client:
             logger.debug(f"Формат 1: id={folder_id}, data[NAME]={filename}, fileContent length={len(file_base64)}")
             
             try:
-                result = self._make_request("disk.folder.uploadfile", upload_data_v1)
+                result = self._make_request("disk.folder.uploadfile", upload_data_v1, use_form_data=True)
                 
                 if result.get("result"):
                     file_data = result["result"]
@@ -395,7 +399,7 @@ class Bitrix24Client:
             }
             
             try:
-                result = self._make_request("disk.folder.uploadfile", upload_data_v2)
+                result = self._make_request("disk.folder.uploadfile", upload_data_v2, use_form_data=True)
                 
                 if result.get("result"):
                     file_data = result["result"]
@@ -545,7 +549,7 @@ class Bitrix24Client:
             }
             
             try:
-                result = self._make_request("disk.folder.uploadfile", upload_data)
+                result = self._make_request("disk.folder.uploadfile", upload_data, use_form_data=True)
                 
                 if result.get("result"):
                     file_data = result["result"]
@@ -608,7 +612,7 @@ class Bitrix24Client:
             }
             
             try:
-                result = self._make_request("disk.file.uploadfile", upload_data_v1)
+                result = self._make_request("disk.file.uploadfile", upload_data_v1, use_form_data=True)
                 
                 if result.get("result"):
                     file_data = result["result"]

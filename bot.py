@@ -2358,8 +2358,76 @@ def main():
                     - Новый формат: {"event": "ONUSERUPDATE", "data": {...}}
                     """
                     try:
-                        # Получаем данные от Bitrix24 (читаем один раз)
-                        data = await request.json()
+                        # Получаем данные от Bitrix24
+                        # Bitrix24 может отправлять данные в разных форматах:
+                        # - application/json
+                        # - application/x-www-form-urlencoded (в теле запроса как строка)
+                        content_type = request.headers.get('Content-Type', '').lower()
+                        logger.debug(f"Content-Type запроса от Bitrix24: {content_type}")
+                        
+                        # Функция для парсинга URL-encoded данных
+                        def parse_urlencoded_data(form_data_dict):
+                            """Парсит словарь form-data в структурированный словарь"""
+                            data = {}
+                            for key, value in form_data_dict.items():
+                                # Обрабатываем вложенные ключи типа data[FIELDS_AFTER][ID]
+                                keys = key.split('[')
+                                current = data
+                                for i, k in enumerate(keys):
+                                    k = k.rstrip(']')
+                                    if i == len(keys) - 1:
+                                        # Обрабатываем значение "undefined" как None
+                                        if value == 'undefined':
+                                            current[k] = None
+                                        else:
+                                            current[k] = value
+                                    else:
+                                        if k not in current:
+                                            current[k] = {}
+                                        current = current[k]
+                            return data
+                        
+                        # Читаем тело запроса как текст (можно прочитать только один раз)
+                        body_text = await request.text()
+                        logger.debug(f"Тело запроса (первые 500 символов): {body_text[:500]}")
+                        
+                        # Пробуем распарсить как JSON
+                        if 'application/json' in content_type:
+                            try:
+                                import json
+                                data = json.loads(body_text)
+                                logger.debug(f"Данные получены как JSON")
+                            except Exception as json_err:
+                                logger.warning(f"Ошибка парсинга JSON: {json_err}, пробуем form-data")
+                                # Парсим как URL-encoded
+                                from urllib.parse import parse_qs
+                                parsed = parse_qs(body_text, keep_blank_values=True)
+                                form_data = {k: v[0] if len(v) == 1 else v for k, v in parsed.items()}
+                                data = parse_urlencoded_data(form_data)
+                                logger.debug(f"Распарсенные данные из текста: {data}")
+                        elif 'application/x-www-form-urlencoded' in content_type:
+                            # Парсим URL-encoded данные
+                            from urllib.parse import parse_qs
+                            parsed = parse_qs(body_text, keep_blank_values=True)
+                            form_data = {k: v[0] if len(v) == 1 else v for k, v in parsed.items()}
+                            logger.debug(f"Распарсенные form-data: {dict(form_data)}")
+                            data = parse_urlencoded_data(form_data)
+                            logger.debug(f"Распарсенные данные: {data}")
+                        else:
+                            # Пробуем сначала JSON, потом form-data
+                            try:
+                                import json
+                                data = json.loads(body_text)
+                                logger.debug(f"Данные получены как JSON (fallback)")
+                            except Exception as json_err:
+                                logger.debug(f"Ошибка парсинга JSON: {json_err}, пробуем form-data через parse_qs")
+                                # Парсим URL-encoded строку
+                                from urllib.parse import parse_qs
+                                parsed = parse_qs(body_text, keep_blank_values=True)
+                                form_data = {k: v[0] if len(v) == 1 else v for k, v in parsed.items()}
+                                logger.debug(f"Распарсенные form-data (fallback): {dict(form_data)}")
+                                data = parse_urlencoded_data(form_data)
+                                logger.debug(f"Распарсенные данные (fallback): {data}")
                         
                         # Проверка токена исходящего вебхука (для безопасности)
                         outgoing_webhook_token = os.getenv("BITRIX24_OUTGOING_WEBHOOK_TOKEN")
