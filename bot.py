@@ -31,6 +31,12 @@ except ImportError:
     DATABASE_AVAILABLE = False
     logger.warning("⚠️ Модуль database не найден. PostgreSQL функции будут недоступны.")
 try:
+    from task_notifications import TaskNotificationService
+    TASK_NOTIFICATIONS_AVAILABLE = True
+except ImportError:
+    TASK_NOTIFICATIONS_AVAILABLE = False
+    logger.warning("⚠️ Модуль task_notifications не найден. Уведомления о задачах будут недоступны.")
+try:
     from aiohttp import web
     AIOHTTP_AVAILABLE = True
 except ImportError:
@@ -197,6 +203,140 @@ def log_all_departments():
 
 # Вызываем функцию логирования при старте (после инициализации THREAD_TO_DEPARTMENT_MAPPING)
 log_all_departments()
+
+
+async def log_telegram_group_info(application: Application):
+    """
+    Вывод информации о Telegram супергруппе и разделах (threads) в консоль
+    """
+    telegram_group_id = os.getenv("TELEGRAM_SUPERGROUP_ID")
+    if not telegram_group_id:
+        logger.info("ℹ️ TELEGRAM_SUPERGROUP_ID не установлен. Информация о группе не будет выведена.")
+        return
+    
+    try:
+        telegram_group_id_int = int(telegram_group_id)
+        
+        logger.info("")
+        logger.info("=" * 80)
+        logger.info("📱 ИНФОРМАЦИЯ О TELEGRAM СУПЕРГРУППЕ:")
+        logger.info("=" * 80)
+        
+        try:
+            # Получаем информацию о чате
+            chat = await application.bot.get_chat(chat_id=telegram_group_id_int)
+            
+            logger.info(f"🆔 ID группы: {chat.id}")
+            logger.info(f"📝 Название: {chat.title or 'Без названия'}")
+            logger.info(f"📋 Тип: {chat.type}")
+            
+            if chat.description:
+                logger.info(f"📄 Описание: {chat.description[:100]}...")
+            
+            # Пробуем получить информацию о разделах (topics/threads)
+            # В Telegram супергруппах с темами используется форум
+            if chat.type == "supergroup" or chat.type == "channel":
+                try:
+                    # Пробуем получить список форумных тем (для супергрупп с темами)
+                    # Используем метод get_forum_topics если доступен
+                    # Если метод недоступен, пробуем получить через обновления или другие способы
+                    
+                    logger.info("")
+                    logger.info("-" * 80)
+                    logger.info("📂 РАЗДЕЛЫ (THREADS/TOPICS) В ГРУППЕ:")
+                    logger.info("-" * 80)
+                    
+                    # Пробуем получить форумные темы через API
+                    topics_found = False
+                    
+                    # Способ 1: Пробуем использовать метод get_forum_topics (если доступен в версии библиотеки)
+                    try:
+                        if hasattr(application.bot, 'get_forum_topics'):
+                            forum_topics = await application.bot.get_forum_topics(
+                                chat_id=telegram_group_id_int
+                            )
+                            if forum_topics and hasattr(forum_topics, 'topics'):
+                                topics = forum_topics.topics
+                                if topics:
+                                    logger.info(f"{'ID темы':<20} | {'Название':<50}")
+                                    logger.info("-" * 80)
+                                    for topic in topics:
+                                        topic_id = getattr(topic, 'message_thread_id', None) or getattr(topic, 'id', None)
+                                        topic_name = getattr(topic, 'name', 'Без названия')
+                                        logger.info(f"{str(topic_id):<20} | {topic_name[:50]:<50}")
+                                    logger.info(f"✅ Найдено разделов: {len(topics)}")
+                                    topics_found = True
+                    except Exception as forum_error:
+                        logger.debug(f"Ошибка при получении форумных тем через get_forum_topics: {forum_error}")
+                    
+                    # Способ 2: Если метод библиотеки недоступен, пробуем прямой вызов Telegram Bot API
+                    if not topics_found:
+                        try:
+                            import requests
+                            bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+                            if bot_token:
+                                # Используем метод getForumTopics из Telegram Bot API
+                                api_url = f"https://api.telegram.org/bot{bot_token}/getForumTopics"
+                                response = requests.post(api_url, json={"chat_id": telegram_group_id_int}, timeout=10)
+                                
+                                if response.status_code == 200:
+                                    result = response.json()
+                                    if result.get("ok") and result.get("result"):
+                                        topics_data = result["result"].get("topics", [])
+                                        if topics_data:
+                                            logger.info(f"{'ID темы':<20} | {'Название':<50}")
+                                            logger.info("-" * 80)
+                                            for topic in topics_data:
+                                                topic_id = topic.get("message_thread_id") or topic.get("id")
+                                                topic_name = topic.get("name", "Без названия")
+                                                logger.info(f"{str(topic_id):<20} | {topic_name[:50]:<50}")
+                                            logger.info(f"✅ Найдено разделов: {len(topics_data)}")
+                                            topics_found = True
+                        except Exception as api_error:
+                            logger.debug(f"Ошибка при получении форумных тем через прямой API: {api_error}")
+                    
+                    # Если не удалось получить разделы автоматически
+                    if not topics_found:
+                        logger.info("ℹ️ Не удалось получить список разделов автоматически")
+                        logger.info("💡 Для получения ID разделов:")
+                        logger.info("   1. Откройте раздел в группе")
+                        logger.info("   2. Используйте бота @userinfobot для получения thread_id")
+                        logger.info("   3. Или отправьте любое сообщение в раздел и проверьте поле message_thread_id в обновлениях")
+                        logger.info("   4. Или используйте команду /get_thread_id в разделе (если добавлена)")
+                    
+                    # Выводим текущий маппинг thread_id -> department_id если он есть
+                    if THREAD_TO_DEPARTMENT_MAPPING:
+                        logger.info("")
+                        logger.info("-" * 80)
+                        logger.info("🔗 ТЕКУЩИЙ МАППИНГ THREAD_ID -> DEPARTMENT_ID:")
+                        logger.info("-" * 80)
+                        logger.info(f"{'Thread ID':<20} | {'Department ID':<20}")
+                        logger.info("-" * 80)
+                        for thread_id, dept_id in sorted(THREAD_TO_DEPARTMENT_MAPPING.items()):
+                            logger.info(f"{str(thread_id):<20} | {str(dept_id):<20}")
+                        logger.info(f"✅ Всего маппингов: {len(THREAD_TO_DEPARTMENT_MAPPING)}")
+                    else:
+                        logger.info("")
+                        logger.info("ℹ️ Маппинг thread_id -> department_id не настроен")
+                        logger.info("💡 Для настройки используйте переменную THREAD_DEPARTMENT_MAPPING")
+                    
+                except Exception as topics_error:
+                    logger.debug(f"Ошибка при получении информации о разделах: {topics_error}")
+            
+        except Exception as chat_error:
+            logger.error(f"❌ Ошибка при получении информации о группе: {chat_error}")
+            logger.info("💡 Проверьте:")
+            logger.info(f"   1. Правильность TELEGRAM_SUPERGROUP_ID: {telegram_group_id}")
+            logger.info("   2. Что бот добавлен в группу")
+            logger.info("   3. Что бот имеет права на чтение информации о группе")
+        
+        logger.info("=" * 80)
+        logger.info("")
+        
+    except (ValueError, TypeError) as group_id_error:
+        logger.warning(f"⚠️ Неверный формат TELEGRAM_SUPERGROUP_ID: {telegram_group_id}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка при выводе информации о группе: {e}", exc_info=True)
 
 
 def parse_initial_message(text: str, bot_username: str) -> Optional[str]:
@@ -543,6 +683,94 @@ async def create_task_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
 
 
+async def group_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для получения информации о Telegram группе и разделах"""
+    try:
+        telegram_group_id = os.getenv("TELEGRAM_SUPERGROUP_ID")
+        if not telegram_group_id:
+            await update.message.reply_text(
+                "ℹ️ TELEGRAM_SUPERGROUP_ID не установлен. Информация о группе недоступна."
+            )
+            return
+        
+        telegram_group_id_int = int(telegram_group_id)
+        
+        # Получаем информацию о чате
+        chat = await context.bot.get_chat(chat_id=telegram_group_id_int)
+        
+        response_text = (
+            f"📱 **Информация о Telegram супергруппе:**\n\n"
+            f"🆔 ID группы: `{chat.id}`\n"
+            f"📝 Название: {chat.title or 'Без названия'}\n"
+            f"📋 Тип: {chat.type}\n"
+        )
+        
+        if chat.description:
+            response_text += f"📄 Описание: {chat.description[:200]}...\n"
+        
+        # Пробуем получить информацию о разделах
+        topics_found = False
+        
+        # Способ 1: Через метод библиотеки
+        try:
+            if hasattr(context.bot, 'get_forum_topics'):
+                forum_topics = await context.bot.get_forum_topics(chat_id=telegram_group_id_int)
+                if forum_topics and hasattr(forum_topics, 'topics'):
+                    topics = forum_topics.topics
+                    if topics:
+                        response_text += "\n📂 **Разделы (Threads/Topics):**\n\n"
+                        for topic in topics:
+                            topic_id = getattr(topic, 'message_thread_id', None) or getattr(topic, 'id', None)
+                            topic_name = getattr(topic, 'name', 'Без названия')
+                            response_text += f"• ID: `{topic_id}` | Название: {topic_name}\n"
+                        response_text += f"\n✅ Всего разделов: {len(topics)}"
+                        topics_found = True
+        except Exception:
+            pass
+        
+        # Способ 2: Через прямой API вызов
+        if not topics_found:
+            try:
+                import requests
+                bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+                if bot_token:
+                    api_url = f"https://api.telegram.org/bot{bot_token}/getForumTopics"
+                    response = requests.post(api_url, json={"chat_id": telegram_group_id_int}, timeout=10)
+                    if response.status_code == 200:
+                        result = response.json()
+                        if result.get("ok") and result.get("result"):
+                            topics_data = result["result"].get("topics", [])
+                            if topics_data:
+                                response_text += "\n📂 **Разделы (Threads/Topics):**\n\n"
+                                for topic in topics_data:
+                                    topic_id = topic.get("message_thread_id") or topic.get("id")
+                                    topic_name = topic.get("name", "Без названия")
+                                    response_text += f"• ID: `{topic_id}` | Название: {topic_name}\n"
+                                response_text += f"\n✅ Всего разделов: {len(topics_data)}"
+                                topics_found = True
+            except Exception:
+                pass
+        
+        if not topics_found:
+            response_text += "\n\nℹ️ Не удалось получить список разделов автоматически.\n"
+            response_text += "💡 Для получения ID разделов используйте бота @userinfobot в разделе."
+        
+        # Добавляем информацию о маппинге
+        if THREAD_TO_DEPARTMENT_MAPPING:
+            response_text += "\n\n🔗 **Текущий маппинг Thread ID -> Department ID:**\n\n"
+            for thread_id, dept_id in sorted(THREAD_TO_DEPARTMENT_MAPPING.items()):
+                response_text += f"• Thread ID `{thread_id}` -> Department ID `{dept_id}`\n"
+            response_text += f"\n✅ Всего маппингов: {len(THREAD_TO_DEPARTMENT_MAPPING)}"
+        
+        await update.message.reply_text(response_text, parse_mode='Markdown')
+        
+    except (ValueError, TypeError) as e:
+        await update.message.reply_text(f"❌ Ошибка: Неверный формат TELEGRAM_SUPERGROUP_ID")
+    except Exception as e:
+        logger.error(f"Ошибка при получении информации о группе: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Ошибка при получении информации о группе: {e}")
+
+
 async def departments_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда для получения списка всех подразделений из Bitrix24"""
     try:
@@ -637,6 +865,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  (Telegram ID будет сохранен в профиле пользователя в Bitrix24)\n"
         "/check_telegram_id bitrix_id - Проверить сохраненный Telegram ID в профиле пользователя\n"
         "/link_username @username bitrix_id - Связать Telegram username с пользователем Битрикс24\n"
+        "/departments - Показать список всех подразделений из Bitrix24\n"
+        "/group_info - Показать информацию о Telegram супергруппе и разделах (threads)\n"
         "/departments - Показать список всех подразделений из Bitrix24\n"
         "/cancel - Отменить создание задачи\n\n"
         "💡 После команды /link бот автоматически определяет ваш аккаунт "
@@ -1597,6 +1827,7 @@ def main():
     application.add_handler(CommandHandler("check_telegram_id", check_telegram_id))
     application.add_handler(CommandHandler("link_username", link_username))
     application.add_handler(CommandHandler("departments", departments_command))
+    application.add_handler(CommandHandler("group_info", group_info_command))
     
     # Обработчик для reply-сообщений с упоминанием бота
     # Регистрируем ПЕРЕД ConversationHandler, чтобы он имел приоритет
@@ -1674,6 +1905,42 @@ def main():
                         
                         # Настраиваем команды бота для доступа через меню прикрепления файлов
                         await setup_bot_commands(application)
+                        
+                        # Выводим информацию о супергруппе и разделах в консоль
+                        await log_telegram_group_info(application)
+                        
+                        # Инициализируем систему уведомлений о задачах
+                        if TASK_NOTIFICATIONS_AVAILABLE:
+                            telegram_group_id = os.getenv("TELEGRAM_SUPERGROUP_ID")
+                            if telegram_group_id:
+                                try:
+                                    telegram_group_id_int = int(telegram_group_id)
+                                    notification_service = TaskNotificationService(
+                                        bitrix_client=bitrix_client,
+                                        telegram_bot=application.bot,
+                                        telegram_group_id=telegram_group_id_int
+                                    )
+                                    
+                                    # Запускаем периодическую проверку задач в фоне
+                                    async def periodic_task_check():
+                                        """Периодическая проверка задач"""
+                                        check_interval = notification_service.check_interval_minutes * 60
+                                        while True:
+                                            try:
+                                                await notification_service.run_periodic_check()
+                                            except Exception as check_error:
+                                                logger.error(f"Ошибка при периодической проверке задач: {check_error}", exc_info=True)
+                                            await asyncio.sleep(check_interval)
+                                    
+                                    # Запускаем задачу в фоне
+                                    asyncio.create_task(periodic_task_check())
+                                    logger.info(f"✅ Система уведомлений о задачах инициализирована для группы {telegram_group_id_int}")
+                                except (ValueError, TypeError) as group_id_error:
+                                    logger.warning(f"⚠️ Неверный формат TELEGRAM_SUPERGROUP_ID: {telegram_group_id}. Уведомления отключены.")
+                                except Exception as notification_error:
+                                    logger.error(f"❌ Ошибка при инициализации системы уведомлений: {notification_error}", exc_info=True)
+                            else:
+                                logger.info("ℹ️ TELEGRAM_SUPERGROUP_ID не установлен. Уведомления о задачах отключены.")
                     except Exception as init_error:
                         logger.error(f"КРИТИЧЕСКАЯ ОШИБКА при инициализации Telegram приложения: {init_error}", exc_info=True)
                         # Не поднимаем исключение, чтобы сервер продолжал работать
@@ -2466,6 +2733,42 @@ def main():
         async def post_init_polling(app: Application):
             await setup_menu_button(app)
             await setup_bot_commands(app)
+            
+            # Выводим информацию о супергруппе и разделах в консоль
+            await log_telegram_group_info(app)
+            
+            # Инициализируем систему уведомлений о задачах
+            if TASK_NOTIFICATIONS_AVAILABLE:
+                telegram_group_id = os.getenv("TELEGRAM_SUPERGROUP_ID")
+                if telegram_group_id:
+                    try:
+                        telegram_group_id_int = int(telegram_group_id)
+                        notification_service = TaskNotificationService(
+                            bitrix_client=bitrix_client,
+                            telegram_bot=app.bot,
+                            telegram_group_id=telegram_group_id_int
+                        )
+                        
+                        # Запускаем периодическую проверку задач в фоне
+                        async def periodic_task_check():
+                            """Периодическая проверка задач"""
+                            check_interval = notification_service.check_interval_minutes * 60
+                            while True:
+                                try:
+                                    await notification_service.run_periodic_check()
+                                except Exception as check_error:
+                                    logger.error(f"Ошибка при периодической проверке задач: {check_error}", exc_info=True)
+                                await asyncio.sleep(check_interval)
+                        
+                        # Запускаем задачу в фоне
+                        asyncio.create_task(periodic_task_check())
+                        logger.info(f"✅ Система уведомлений о задачах инициализирована для группы {telegram_group_id_int}")
+                    except (ValueError, TypeError) as group_id_error:
+                        logger.warning(f"⚠️ Неверный формат TELEGRAM_SUPERGROUP_ID: {telegram_group_id}. Уведомления отключены.")
+                    except Exception as notification_error:
+                        logger.error(f"❌ Ошибка при инициализации системы уведомлений: {notification_error}", exc_info=True)
+                else:
+                    logger.info("ℹ️ TELEGRAM_SUPERGROUP_ID не установлен. Уведомления о задачах отключены.")
         
         application.post_init = post_init_polling
         application.run_polling(allowed_updates=Update.ALL_TYPES)

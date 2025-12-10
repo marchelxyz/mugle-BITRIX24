@@ -149,6 +149,18 @@ def init_database():
                     )
                 """)
                 
+                # Таблица для отслеживания отправленных уведомлений о задачах
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS task_notifications (
+                        id SERIAL PRIMARY KEY,
+                        notification_key VARCHAR(255) UNIQUE NOT NULL,
+                        task_id INTEGER NOT NULL,
+                        notification_type VARCHAR(50) NOT NULL,
+                        sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        extra_data TEXT
+                    )
+                """)
+                
                 # Создаем индексы для быстрого поиска
                 cur.execute("""
                     CREATE INDEX IF NOT EXISTS idx_telegram_to_bitrix_bitrix_id 
@@ -158,6 +170,16 @@ def init_database():
                 cur.execute("""
                     CREATE INDEX IF NOT EXISTS idx_username_to_bitrix_bitrix_id 
                     ON username_to_bitrix(bitrix_user_id)
+                """)
+                
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_task_notifications_key 
+                    ON task_notifications(notification_key)
+                """)
+                
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_task_notifications_task_id 
+                    ON task_notifications(task_id)
                 """)
                 
                 conn.commit()
@@ -382,3 +404,70 @@ def delete_thread_to_department_mapping(thread_id: int) -> bool:
     except Exception as e:
         logger.debug(f"Ошибка при удалении маппинга thread {thread_id}: {e}")
         return False
+
+
+# Функции для работы с уведомлениями о задачах
+
+def was_notification_sent(notification_key: str) -> bool:
+    """Проверка, было ли уже отправлено уведомление"""
+    if _connection_pool is None:
+        return False
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id FROM task_notifications WHERE notification_key = %s",
+                    (notification_key,)
+                )
+                result = cur.fetchone()
+                return result is not None
+    except Exception as e:
+        logger.debug(f"Ошибка при проверке уведомления {notification_key}: {e}")
+        return False
+
+
+def mark_notification_sent(notification_key: str, task_id: int, notification_type: str, extra_data: str = None) -> bool:
+    """Отметить уведомление как отправленное"""
+    if _connection_pool is None:
+        return False
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO task_notifications (notification_key, task_id, notification_type, extra_data)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (notification_key) DO NOTHING
+                """, (notification_key, task_id, notification_type, extra_data))
+                conn.commit()
+                return True
+    except Exception as e:
+        logger.debug(f"Ошибка при сохранении уведомления {notification_key}: {e}")
+        return False
+
+
+def get_notification_history(task_id: int = None, notification_type: str = None, limit: int = 100) -> List[Dict]:
+    """Получение истории уведомлений"""
+    if _connection_pool is None:
+        return []
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                query = "SELECT * FROM task_notifications WHERE 1=1"
+                params = []
+                
+                if task_id:
+                    query += " AND task_id = %s"
+                    params.append(task_id)
+                
+                if notification_type:
+                    query += " AND notification_type = %s"
+                    params.append(notification_type)
+                
+                query += " ORDER BY sent_at DESC LIMIT %s"
+                params.append(limit)
+                
+                cur.execute(query, params)
+                return cur.fetchall()
+    except Exception as e:
+        logger.debug(f"Ошибка при получении истории уведомлений: {e}")
+        return []
