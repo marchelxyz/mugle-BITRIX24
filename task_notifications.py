@@ -224,7 +224,7 @@ class TaskNotificationService:
                     logger.debug(f"Не удалось получить полную информацию о задаче {task_id}: {e}")
                     created_by_id = None
                 
-                # Получаем Telegram ID ответственного и создателя
+                # Получаем Telegram ID ответственного и создателя через БД (только зарегистрированные пользователи)
                 telegram_ids = []
                 responsible_telegram_id = None
                 created_by_telegram_id = None
@@ -232,20 +232,40 @@ class TaskNotificationService:
                 # Сначала получаем создателя (если он есть и отличается от ответственного)
                 if created_by_id and str(created_by_id) != str(responsible_id):
                     try:
-                        created_by_telegram_id = self.bitrix_client.get_user_telegram_id(int(created_by_id))
-                        if created_by_telegram_id:
-                            telegram_ids.append(created_by_telegram_id)
+                        if DATABASE_AVAILABLE:
+                            created_by_telegram_id = database.get_telegram_id_by_bitrix_id(int(created_by_id))
+                            if created_by_telegram_id:
+                                telegram_ids.append(created_by_telegram_id)
+                                logger.info(f"✅ Найден зарегистрированный пользователь (создатель): {created_by_telegram_id}")
+                        else:
+                            # Fallback: пробуем через Bitrix24Client
+                            created_by_telegram_id = self.bitrix_client.get_user_telegram_id(int(created_by_id))
+                            if created_by_telegram_id:
+                                telegram_ids.append(created_by_telegram_id)
                     except Exception as e:
-                        logger.debug(f"Не удалось получить Telegram ID для создателя {created_by_id}: {e}")
+                        logger.debug(f"Не удалось найти Telegram ID для создателя {created_by_id}: {e}")
                 
                 # Затем получаем ответственного
                 if responsible_id:
                     try:
-                        responsible_telegram_id = self.bitrix_client.get_user_telegram_id(int(responsible_id))
-                        if responsible_telegram_id and responsible_telegram_id not in telegram_ids:
-                            telegram_ids.append(responsible_telegram_id)
+                        if DATABASE_AVAILABLE:
+                            responsible_telegram_id = database.get_telegram_id_by_bitrix_id(int(responsible_id))
+                            if responsible_telegram_id and responsible_telegram_id not in telegram_ids:
+                                telegram_ids.append(responsible_telegram_id)
+                                logger.info(f"✅ Найден зарегистрированный пользователь (ответственный): {responsible_telegram_id}")
+                        else:
+                            # Fallback: пробуем через Bitrix24Client
+                            responsible_telegram_id = self.bitrix_client.get_user_telegram_id(int(responsible_id))
+                            if responsible_telegram_id and responsible_telegram_id not in telegram_ids:
+                                telegram_ids.append(responsible_telegram_id)
                     except Exception as e:
-                        logger.debug(f"Не удалось получить Telegram ID для ответственного {responsible_id}: {e}")
+                        logger.debug(f"Не удалось найти Telegram ID для ответственного {responsible_id}: {e}")
+                
+                # Отправляем уведомление ТОЛЬКО если есть зарегистрированные пользователи
+                if not telegram_ids:
+                    logger.info(f"ℹ️ Нет зарегистрированных пользователей для уведомления о просроченной задаче {task_id}")
+                    logger.info(f"   Создатель: {created_by_id}, Исполнитель: {responsible_id}")
+                    continue
                 
                 # Формируем ссылку на задачу
                 task_url = self.bitrix_client.get_task_url(int(task_id), responsible_id)
@@ -258,7 +278,7 @@ class TaskNotificationService:
                     message = f"вы просрочили задачу <a href='{task_url}'>«{task.get('title', 'Без названия')}»</a>"
                 
                 # Отправляем уведомление
-                await self._send_notification(message, telegram_ids if telegram_ids else None)
+                await self._send_notification(message, telegram_ids)
                 self._mark_notification_sent(notification_key, int(task_id), "overdue")
                 
                 logger.info(f"✅ Отправлено уведомление о просроченной задаче {task_id}")
@@ -301,12 +321,28 @@ class TaskNotificationService:
                 if self._was_notification_sent(notification_key):
                     continue
                 
-                # Получаем Telegram ID ответственного
+                # Получаем Telegram ID ответственного через БД (только зарегистрированные пользователи)
                 telegram_ids = []
                 if responsible_id:
-                    telegram_id = self.bitrix_client.get_user_telegram_id(int(responsible_id))
-                    if telegram_id:
-                        telegram_ids.append(telegram_id)
+                    try:
+                        if DATABASE_AVAILABLE:
+                            telegram_id = database.get_telegram_id_by_bitrix_id(int(responsible_id))
+                            if telegram_id:
+                                telegram_ids.append(telegram_id)
+                                logger.info(f"✅ Найден зарегистрированный пользователь (ответственный): {telegram_id}")
+                        else:
+                            # Fallback: пробуем через Bitrix24Client
+                            telegram_id = self.bitrix_client.get_user_telegram_id(int(responsible_id))
+                            if telegram_id:
+                                telegram_ids.append(telegram_id)
+                    except Exception as e:
+                        logger.debug(f"Не удалось найти Telegram ID для ответственного {responsible_id}: {e}")
+                
+                # Отправляем уведомление ТОЛЬКО если есть зарегистрированные пользователи
+                if not telegram_ids:
+                    logger.info(f"ℹ️ Нет зарегистрированных пользователей для уведомления о приближающемся дедлайне задачи {task_id}")
+                    logger.info(f"   Исполнитель: {responsible_id}")
+                    continue
                 
                 # Формируем ссылку на задачу
                 task_url = self.bitrix_client.get_task_url(int(task_id), responsible_id)
@@ -337,7 +373,7 @@ class TaskNotificationService:
                 message = f"вы почти просрочили задачу <a href='{task_url}'>«{task_title}»</a>"
                 
                 # Отправляем уведомление
-                await self._send_notification(message, telegram_ids if telegram_ids else None)
+                await self._send_notification(message, telegram_ids)
                 self._mark_notification_sent(notification_key, int(task_id), "deadline_warning")
                 
                 logger.info(f"✅ Отправлено предупреждение о дедлайне задачи {task_id}")
