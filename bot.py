@@ -1958,30 +1958,16 @@ def main():
                         if not final_responsible_ids:
                             return web.json_response({'error': 'Исполнитель не указан'}, status=400)
                         
-                        # Загружаем файлы в Bitrix24, если они есть
-                        file_ids = None
-                        if files:
-                            logger.info(f"Загрузка {len(files)} файлов в Bitrix24...")
-                            uploaded_file_ids = []
-                            for filename, file_content in files:
-                                file_id = bitrix_client.upload_file(file_content, filename)
-                                if file_id:
-                                    uploaded_file_ids.append(file_id)
-                                else:
-                                    logger.warning(f"Не удалось загрузить файл {filename} в Bitrix24")
-                            
-                            if uploaded_file_ids:
-                                file_ids = uploaded_file_ids
-                                logger.info(f"✅ Успешно загружено {len(uploaded_file_ids)} файлов в Bitrix24")
-                        
-                        # Создаем задачу
+                        # Создаем задачу с файлами
+                        # Пробуем сначала передать файлы напрямую при создании задачи
+                        # Если это не сработает, файлы будут загружены на диск и прикреплены через ID
                         result = bitrix_client.create_task(
                             title=title,
                             responsible_ids=final_responsible_ids,
                             creator_id=creator_id,
                             description=description,
                             deadline=deadline,
-                            file_ids=file_ids,
+                            files=files if files else None,  # Передаем файлы напрямую
                             department_id=department_id
                         )
                         

@@ -32,7 +32,7 @@ class Bitrix24Client:
         # Название поля для хранения Telegram ID (по умолчанию UF_USR_TELEGRAM, так как поле создается автоматически в Bitrix24)
         self.telegram_field_name = telegram_field_name or os.getenv("BITRIX24_TELEGRAM_FIELD_NAME", "UF_USR_TELEGRAM")
     
-    def _make_request(self, method: str, params: Dict = None, use_get: bool = False) -> Dict:
+    def _make_request(self, method: str, params: Dict = None, use_get: bool = False, files: Dict = None) -> Dict:
         """
         Выполнение запроса к API Битрикс24
         
@@ -40,6 +40,7 @@ class Bitrix24Client:
             method: Метод API (например, tasks.task.add)
             params: Параметры запроса
             use_get: Если True, использует GET запрос вместо POST
+            files: Словарь файлов для multipart/form-data запроса
             
         Returns:
             Ответ от API
@@ -52,6 +53,9 @@ class Bitrix24Client:
         if use_get:
             # Для GET запросов параметры передаются в URL
             response = requests.get(url, params=params)
+        elif files:
+            # Для POST запросов с файлами используем multipart/form-data
+            response = requests.post(url, data=params, files=files)
         else:
             # Для POST запросов параметры передаются в JSON body
             response = requests.post(url, json=params)
@@ -67,7 +71,8 @@ class Bitrix24Client:
         description: str = "",
         deadline: str = None,
         file_ids: List[int] = None,
-        department_id: int = None
+        department_id: int = None,
+        files: List[tuple] = None
     ) -> Dict:
         """
         Создание задачи в Битрикс24
@@ -78,8 +83,9 @@ class Bitrix24Client:
             creator_id: ID создателя задачи
             description: Описание задачи
             deadline: Дедлайн задачи (формат: YYYY-MM-DD HH:MI:SS)
-            file_ids: Список ID прикрепленных файлов
+            file_ids: Список ID прикрепленных файлов (если файлы уже загружены на диск)
             department_id: ID подразделения (опционально)
+            files: Список кортежей (filename, file_content) для прямого прикрепления файлов к задаче
             
         Returns:
             Результат создания задачи
@@ -110,9 +116,6 @@ class Bitrix24Client:
         if deadline:
             task_data["fields"]["DEADLINE"] = deadline
         
-        if file_ids:
-            task_data["fields"]["UF_TASK_WEBDAV_FILES"] = file_ids
-        
         # Добавляем подразделение, если указано
         # Примечание: В Bitrix24 для задач может использоваться поле GROUP_ID (для группы) 
         # или пользовательское поле типа UF_DEPARTMENT или UF_CRM_TASK_DEPARTMENT
@@ -123,8 +126,82 @@ class Bitrix24Client:
             # Если в вашем Bitrix24 используется другое поле, замените GROUP_ID на нужное
             task_data["fields"]["GROUP_ID"] = department_id
         
+        # Если файлы переданы напрямую, пробуем прикрепить их при создании задачи
+        if files and not file_ids:
+            logger.info(f"Попытка прямого прикрепления {len(files)} файлов к задаче при создании")
+            result = self._create_task_with_files(task_data, files)
+            if result:
+                return result
+            logger.warning("Прямое прикрепление файлов не сработало, пробуем загрузить на диск")
+            # Если прямой способ не сработал, загружаем файлы на диск
+            file_ids = []
+            for filename, file_content in files:
+                file_id = self.upload_file(file_content, filename)
+                if file_id:
+                    file_ids.append(file_id)
+        
+        # Прикрепляем файлы через ID (если они были загружены на диск)
+        if file_ids:
+            logger.info(f"Прикрепление {len(file_ids)} файлов к задаче через ID")
+            # Пробуем разные форматы для прикрепления файлов
+            # Формат 1: UF_TASK_WEBDAV_FILES (стандартный)
+            task_data["fields"]["UF_TASK_WEBDAV_FILES"] = file_ids
+            # Также пробуем FILES (альтернативный формат)
+            # task_data["fields"]["FILES"] = file_ids
+        
         result = self._make_request("tasks.task.add", task_data)
         return result
+    
+    def _create_task_with_files(self, task_data: Dict, files: List[tuple]) -> Optional[Dict]:
+        """
+        Создание задачи с прямым прикреплением файлов через multipart/form-data
+        
+        В Bitrix24 файлы можно прикрепить напрямую к задаче при создании через поле FILES
+        """
+        try:
+            url = f"{self.base_url}/tasks.task.add"
+            
+            # Подготавливаем данные задачи в формате для multipart
+            form_data = {}
+            for key, value in task_data.get("fields", {}).items():
+                if isinstance(value, list):
+                    # Для массивов (например, ACCOMPLICES) передаем каждый элемент отдельно
+                    for i, item in enumerate(value):
+                        form_data[f"fields[{key}][{i}]"] = str(item)
+                else:
+                    form_data[f"fields[{key}]"] = str(value)
+            
+            # Подготавливаем файлы для multipart
+            # В Bitrix24 файлы передаются через поле FILES с индексами
+            files_dict = {}
+            for i, (filename, file_content) in enumerate(files):
+                # Определяем MIME тип по расширению файла
+                import mimetypes
+                mime_type, _ = mimetypes.guess_type(filename)
+                if not mime_type:
+                    mime_type = 'application/octet-stream'
+                
+                files_dict[f"FILES[{i}]"] = (filename, file_content, mime_type)
+            
+            logger.debug(f"Попытка создания задачи с {len(files)} файлами через multipart/form-data")
+            response = requests.post(url, data=form_data, files=files_dict)
+            response.raise_for_status()
+            result = response.json()
+            
+            if result.get("result"):
+                logger.info(f"✅ Задача создана с прямым прикреплением {len(files)} файлов")
+                return result
+            
+            error = result.get("error", "")
+            error_description = result.get("error_description", "")
+            if error:
+                logger.debug(f"Ошибка при создании задачи с файлами: {error} - {error_description}")
+            
+            return None
+            
+        except Exception as e:
+            logger.debug(f"Ошибка при прямом прикреплении файлов к задаче: {e}")
+            return None
     
     def upload_file(self, file_content: bytes, filename: str, folder_id: str = "shared_files") -> Optional[int]:
         """
@@ -138,28 +215,146 @@ class Bitrix24Client:
         Returns:
             ID загруженного файла или None
         """
+        logger.info(f"📤 Начинаем загрузку файла {filename} (размер: {len(file_content)} байт) в папку {folder_id}")
+        
+        # Пробуем сначала через disk.folder.uploadfile (правильный метод)
+        logger.debug(f"Попытка 1: Загрузка через disk.folder.uploadfile")
+        result = self._upload_file_via_disk_folder(file_content, filename, folder_id)
+        if result:
+            logger.info(f"✅ Файл {filename} успешно загружен (ID: {result})")
+            return result
+        
+        # Если не сработало, пробуем через multipart/form-data
+        logger.debug(f"Попытка 2: Загрузка через multipart/form-data")
+        result = self._upload_file_via_multipart(file_content, filename, folder_id)
+        if result:
+            logger.info(f"✅ Файл {filename} успешно загружен через multipart (ID: {result})")
+            return result
+        
+        # Если ничего не сработало, пробуем получить реальный ID папки shared_files
+        logger.debug(f"Попытка 3: Получение ID папки shared_files и повторная попытка")
+        real_folder_id = self._get_shared_files_folder_id()
+        if real_folder_id and real_folder_id != folder_id:
+            logger.info(f"Найден ID папки shared_files: {real_folder_id}, пробуем загрузить снова")
+            result = self._upload_file_via_disk_folder(file_content, filename, real_folder_id)
+            if result:
+                logger.info(f"✅ Файл {filename} успешно загружен с реальным ID папки (ID: {result})")
+                return result
+        
+        # Если ничего не сработало, пробуем старый метод как fallback
+        logger.debug(f"Попытка 4: Использование старого метода")
+        result = self._upload_file_alternative(file_content, filename, folder_id)
+        if result:
+            logger.info(f"✅ Файл {filename} успешно загружен через старый метод (ID: {result})")
+            return result
+        
+        logger.error(f"❌ Не удалось загрузить файл {filename} ни одним из методов")
+        logger.error(f"💡 Проверьте права вебхука на загрузку файлов (disk)")
+        return None
+    
+    def _upload_file_via_disk_folder(self, file_content: bytes, filename: str, folder_id: str) -> Optional[int]:
+        """
+        Загрузка файла через disk.folder.uploadfile (правильный метод Bitrix24)
+        """
         try:
             import base64
             
-            # Кодируем файл в base64 для передачи через REST API
             file_base64 = base64.b64encode(file_content).decode('utf-8')
             
-            # В Bitrix24 REST API для загрузки файлов используется disk.file.upload
-            # Формат: {"id": "folder_id", "data": {"NAME": "filename", "fileContent": "base64_content"}}
-            upload_data = {
+            # Пробуем разные форматы для disk.folder.uploadfile
+            # Формат 1: с data[NAME] (стандартный формат Bitrix24)
+            upload_data_v1 = {
                 "id": folder_id,
-                "data": {
-                    "NAME": filename,
-                    "fileContent": file_base64
-                }
+                "data[NAME]": filename,
+                "fileContent": file_base64
             }
             
-            result = self._make_request("disk.file.upload", upload_data)
+            try:
+                result = self._make_request("disk.folder.uploadfile", upload_data_v1)
+                
+                if result.get("result"):
+                    file_data = result["result"]
+                    file_id = None
+                    if isinstance(file_data, dict):
+                        file_id = file_data.get("ID") or file_data.get("id")
+                    elif isinstance(file_data, (int, str)):
+                        file_id = file_data
+                    
+                    if file_id:
+                        logger.info(f"✅ Файл {filename} успешно загружен через disk.folder.uploadfile (ID: {file_id})")
+                        return int(file_id)
+                
+                error = result.get("error", "")
+                error_description = result.get("error_description", "")
+                if error:
+                    logger.debug(f"disk.folder.uploadfile (формат 1) вернул ошибку: {error} - {error_description}")
+            except Exception as e1:
+                logger.debug(f"Ошибка при загрузке через формат 1: {e1}")
             
-            # Проверяем результат
+            # Формат 2: с data как объект
+            upload_data_v2 = {
+                "id": folder_id,
+                "data": {
+                    "NAME": filename
+                },
+                "fileContent": file_base64
+            }
+            
+            try:
+                result = self._make_request("disk.folder.uploadfile", upload_data_v2)
+                
+                if result.get("result"):
+                    file_data = result["result"]
+                    file_id = None
+                    if isinstance(file_data, dict):
+                        file_id = file_data.get("ID") or file_data.get("id")
+                    elif isinstance(file_data, (int, str)):
+                        file_id = file_data
+                    
+                    if file_id:
+                        logger.info(f"✅ Файл {filename} успешно загружен через disk.folder.uploadfile формат 2 (ID: {file_id})")
+                        return int(file_id)
+                
+                error = result.get("error", "")
+                error_description = result.get("error_description", "")
+                if error:
+                    logger.debug(f"disk.folder.uploadfile (формат 2) вернул ошибку: {error} - {error_description}")
+            except Exception as e2:
+                logger.debug(f"Ошибка при загрузке через формат 2: {e2}")
+            
+            return None
+            
+        except Exception as e:
+            logger.debug(f"Ошибка при загрузке файла {filename} через disk.folder.uploadfile: {e}")
+            return None
+    
+    def _upload_file_via_multipart(self, file_content: bytes, filename: str, folder_id: str) -> Optional[int]:
+        """
+        Загрузка файла через multipart/form-data (альтернативный метод)
+        """
+        try:
+            import base64
+            
+            file_base64 = base64.b64encode(file_content).decode('utf-8')
+            
+            url = f"{self.base_url}/disk.folder.uploadfile"
+            
+            # Пробуем разные форматы multipart
+            # Формат 1: стандартный multipart
+            files = {
+                'file': (filename, file_content, 'application/octet-stream')
+            }
+            data = {
+                'id': folder_id,
+                'data[NAME]': filename
+            }
+            
+            response = requests.post(url, files=files, data=data)
+            response.raise_for_status()
+            result = response.json()
+            
             if result.get("result"):
                 file_data = result["result"]
-                # Может быть словарь с ID или просто ID
                 file_id = None
                 if isinstance(file_data, dict):
                     file_id = file_data.get("ID") or file_data.get("id")
@@ -167,34 +362,78 @@ class Bitrix24Client:
                     file_id = file_data
                 
                 if file_id:
-                    logger.info(f"✅ Файл {filename} успешно загружен в Bitrix24 (ID: {file_id})")
+                    logger.info(f"✅ Файл {filename} успешно загружен через multipart/form-data (ID: {file_id})")
                     return int(file_id)
-                else:
-                    logger.warning(f"⚠️ Файл загружен, но ID не получен. Результат: {result}")
-                    # Пробуем альтернативный способ - через disk.folder.uploadfile
-                    return self._upload_file_alternative(file_content, filename, folder_id)
-            else:
-                error = result.get("error", "Неизвестная ошибка")
-                error_description = result.get("error_description", "")
-                logger.warning(f"⚠️ Ошибка при загрузке файла через disk.file.upload: {error} - {error_description}")
-                # Пробуем альтернативный способ
-                return self._upload_file_alternative(file_content, filename, folder_id)
+            
+            # Формат 2: с fileContent в base64
+            data2 = {
+                'id': folder_id,
+                'data[NAME]': filename,
+                'fileContent': file_base64
+            }
+            
+            response2 = requests.post(url, data=data2)
+            response2.raise_for_status()
+            result2 = response2.json()
+            
+            if result2.get("result"):
+                file_data = result2["result"]
+                file_id = None
+                if isinstance(file_data, dict):
+                    file_id = file_data.get("ID") or file_data.get("id")
+                elif isinstance(file_data, (int, str)):
+                    file_id = file_data
                 
+                if file_id:
+                    logger.info(f"✅ Файл {filename} успешно загружен через multipart с base64 (ID: {file_id})")
+                    return int(file_id)
+            
+            return None
+            
         except Exception as e:
-            logger.error(f"Ошибка при загрузке файла {filename} в Bitrix24: {e}", exc_info=True)
-            # Пробуем альтернативный способ
-            return self._upload_file_alternative(file_content, filename, folder_id)
+            logger.debug(f"Ошибка при загрузке файла {filename} через multipart: {e}")
+            return None
+    
+    def _get_shared_files_folder_id(self) -> Optional[str]:
+        """
+        Получение реального ID папки shared_files через API
+        """
+        try:
+            # Пробуем получить список папок диска
+            result = self._make_request("disk.folder.getchildren", {
+                "id": "0"  # Корневая папка
+            })
+            
+            if result.get("result"):
+                folders = result["result"]
+                if isinstance(folders, list):
+                    for folder in folders:
+                        if isinstance(folder, dict):
+                            name = folder.get("NAME", "")
+                            if name == "Общие файлы" or name == "shared_files" or folder.get("ID") == "shared_files":
+                                folder_id = folder.get("ID")
+                                logger.debug(f"Найден ID папки shared_files: {folder_id}")
+                                return folder_id
+                elif isinstance(folders, dict):
+                    # Если результат - одна папка
+                    if folders.get("NAME") == "Общие файлы" or folders.get("ID") == "shared_files":
+                        return folders.get("ID")
+            
+            return None
+        except Exception as e:
+            logger.debug(f"Ошибка при получении ID папки shared_files: {e}")
+            return None
     
     def _upload_file_alternative(self, file_content: bytes, filename: str, folder_id: str) -> Optional[int]:
         """
-        Альтернативный способ загрузки файла через disk.folder.uploadfile
+        Старый альтернативный способ загрузки файла (fallback)
         """
         try:
             import base64
             
             file_base64 = base64.b64encode(file_content).decode('utf-8')
             
-            # Альтернативный метод - disk.folder.uploadfile
+            # Старый формат - пробуем как есть
             upload_data = {
                 "id": folder_id,
                 "data": {
@@ -214,10 +453,10 @@ class Bitrix24Client:
                     file_id = file_data
                 
                 if file_id:
-                    logger.info(f"✅ Файл {filename} успешно загружен через альтернативный метод (ID: {file_id})")
+                    logger.info(f"✅ Файл {filename} успешно загружен через старый метод (ID: {file_id})")
                     return int(file_id)
             
-            logger.warning(f"⚠️ Альтернативный метод загрузки также не сработал для файла {filename}")
+            logger.warning(f"⚠️ Все методы загрузки файла {filename} не сработали")
             return None
             
         except Exception as e:
@@ -337,8 +576,6 @@ class Bitrix24Client:
                     log_line = f"ID: {user_id}"
                     if full_name:
                         log_line += f" | Имя: {full_name}"
-                    if email:
-                        log_line += f" | Email: {email}"
                     if login:
                         log_line += f" | Login: {login}"
                     if telegram_id:
@@ -366,8 +603,6 @@ class Bitrix24Client:
                 log_line = f"ID: {user_id}"
                 if full_name:
                     log_line += f" | Имя: {full_name}"
-                if email:
-                    log_line += f" | Email: {email}"
                 if login:
                     log_line += f" | Login: {login}"
                 if telegram_id:
@@ -422,8 +657,6 @@ class Bitrix24Client:
                         log_line = f"ID: {user_id}"
                         if full_name:
                             log_line += f" | Имя: {full_name}"
-                        if email:
-                            log_line += f" | Email: {email}"
                         if login:
                             log_line += f" | Login: {login}"
                         if telegram_id:
@@ -450,8 +683,6 @@ class Bitrix24Client:
                     log_line = f"ID: {user_id}"
                     if full_name:
                         log_line += f" | Имя: {full_name}"
-                    if email:
-                        log_line += f" | Email: {email}"
                     if login:
                         log_line += f" | Login: {login}"
                     if telegram_id:
