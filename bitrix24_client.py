@@ -1795,40 +1795,91 @@ class Bitrix24Client:
             
             # Вариант 1: с параметром "id"
             try:
+                logger.debug(f"🔍 Попытка 1: tasks.task.get с параметром 'id' для задачи {task_id}")
                 result = self._make_request("tasks.task.get", {"id": task_id})
+                logger.info(f"✅ Успешно получен ответ через вариант 1 (id={task_id})")
             except Exception as e1:
+                logger.debug(f"⚠️ Вариант 1 не сработал: {e1}")
                 # Вариант 2: с параметром "taskId"
                 try:
+                    logger.debug(f"🔍 Попытка 2: tasks.task.get с параметром 'taskId' для задачи {task_id}")
                     result = self._make_request("tasks.task.get", {"taskId": task_id})
+                    logger.info(f"✅ Успешно получен ответ через вариант 2 (taskId={task_id})")
                 except Exception as e2:
+                    logger.debug(f"⚠️ Вариант 2 не сработал: {e2}")
                     # Вариант 3: с параметром "TASKID"
                     try:
+                        logger.debug(f"🔍 Попытка 3: tasks.task.get с параметром 'TASKID' для задачи {task_id}")
                         result = self._make_request("tasks.task.get", {"TASKID": task_id})
+                        logger.info(f"✅ Успешно получен ответ через вариант 3 (TASKID={task_id})")
                     except Exception as e3:
+                        logger.debug(f"⚠️ Вариант 3 не сработал: {e3}")
                         # Fallback: используем tasks.task.list с фильтром по ID
-                        logger.debug(f"Метод tasks.task.get недоступен, используем tasks.task.list для задачи {task_id}")
+                        logger.warning(f"⚠️ Метод tasks.task.get недоступен, используем tasks.task.list для задачи {task_id}")
                         try:
                             list_result = self.get_tasks(filter_params={"ID": task_id})
                             if list_result:
+                                logger.info(f"✅ Получена задача через tasks.task.list (fallback)")
                                 # Возвращаем первую найденную задачу
                                 return list_result[0] if isinstance(list_result, list) and len(list_result) > 0 else None
                         except Exception as e4:
-                            logger.warning(f"Все варианты получения задачи {task_id} не сработали: {e4}")
+                            logger.warning(f"❌ Все варианты получения задачи {task_id} не сработали: {e4}")
+                            result = None
             
-            if result and result.get("result"):
-                task_data = result["result"].get("task")
-                if task_data:
-                    return {
-                        "id": task_id,
-                        "title": task_data.get("TITLE", ""),
-                        "description": task_data.get("DESCRIPTION", ""),
-                        "deadline": task_data.get("DEADLINE"),
-                        "status": task_data.get("STATUS"),
-                        "responsibleId": task_data.get("RESPONSIBLE_ID"),
-                        "createdBy": task_data.get("CREATED_BY"),
-                        "createdDate": task_data.get("CREATED_DATE"),
-                        "changedDate": task_data.get("CHANGED_DATE")
-                    }
+            if result:
+                # Логируем полный ответ от API
+                import json
+                logger.info(f"🔍 ПОЛНЫЙ ОТВЕТ ОТ tasks.task.get ДЛЯ ЗАДАЧИ {task_id}:")
+                logger.info(f"   Тип результата: {type(result)}")
+                logger.info(f"   Ключи верхнего уровня: {list(result.keys()) if isinstance(result, dict) else 'N/A'}")
+                logger.info(f"   Полный JSON ответа (первые 2000 символов): {json.dumps(result, ensure_ascii=False, indent=2)[:2000]}")
+                
+                if result.get("result"):
+                    task_data = result["result"].get("task")
+                    if task_data:
+                        # Логируем структуру task_data
+                        logger.info(f"📋 СТРУКТУРА task_data:")
+                        logger.info(f"   Тип: {type(task_data)}")
+                        if isinstance(task_data, dict):
+                            logger.info(f"   Все доступные ключи: {list(task_data.keys())}")
+                            logger.info(f"   Полный JSON task_data (первые 2000 символов): {json.dumps(task_data, ensure_ascii=False, indent=2)[:2000]}")
+                            
+                            # Проверяем разные варианты названий полей
+                            responsible_id = task_data.get("RESPONSIBLE_ID") or task_data.get("responsibleId") or task_data.get("RESPONSIBLE_ID") or task_data.get("responsible_id")
+                            created_by = task_data.get("CREATED_BY") or task_data.get("createdBy") or task_data.get("CREATED_BY") or task_data.get("created_by")
+                            
+                            logger.info(f"🔍 ПОИСК ПОЛЕЙ ОТВЕТСТВЕННОГО И СОЗДАТЕЛЯ:")
+                            logger.info(f"   RESPONSIBLE_ID (прямой): {task_data.get('RESPONSIBLE_ID')}")
+                            logger.info(f"   responsibleId (camelCase): {task_data.get('responsibleId')}")
+                            logger.info(f"   responsible_id (snake_case): {task_data.get('responsible_id')}")
+                            logger.info(f"   Найденный responsible_id: {responsible_id}")
+                            logger.info(f"   CREATED_BY (прямой): {task_data.get('CREATED_BY')}")
+                            logger.info(f"   createdBy (camelCase): {task_data.get('createdBy')}")
+                            logger.info(f"   created_by (snake_case): {task_data.get('created_by')}")
+                            logger.info(f"   Найденный created_by: {created_by}")
+                            
+                            return {
+                                "id": task_id,
+                                "title": task_data.get("TITLE", ""),
+                                "description": task_data.get("DESCRIPTION", ""),
+                                "deadline": task_data.get("DEADLINE"),
+                                "status": task_data.get("STATUS"),
+                                "responsibleId": responsible_id,
+                                "createdBy": created_by,
+                                "createdDate": task_data.get("CREATED_DATE"),
+                                "changedDate": task_data.get("CHANGED_DATE")
+                            }
+                        else:
+                            logger.warning(f"⚠️ task_data не является словарем: {type(task_data)}, значение: {task_data}")
+                    else:
+                        logger.warning(f"⚠️ В result нет ключа 'task'. Доступные ключи: {list(result['result'].keys()) if isinstance(result.get('result'), dict) else 'N/A'}")
+                        logger.warning(f"   Полный result['result']: {json.dumps(result.get('result'), ensure_ascii=False, indent=2)[:1000]}")
+                else:
+                    logger.warning(f"⚠️ В ответе нет ключа 'result'. Полный ответ: {json.dumps(result, ensure_ascii=False, indent=2)[:1000]}")
+                    if result.get("error"):
+                        logger.error(f"❌ Ошибка в ответе: {result.get('error')} - {result.get('error_description', '')}")
+            else:
+                logger.warning(f"⚠️ Результат запроса tasks.task.get для задачи {task_id} = None (все варианты запросов не вернули данных)")
             
             return None
         except Exception as e:
