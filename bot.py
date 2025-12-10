@@ -2478,13 +2478,25 @@ def main():
                             token_from_body = None
                             if isinstance(data, dict):
                                 # Проверяем различные варианты расположения токена в теле
+                                auth_dict = data.get('auth', {}) if isinstance(data.get('auth'), dict) else {}
+                                # Bitrix24 отправляет токен в auth.application_token для исходящих вебхуков
+                                token_from_auth_token = auth_dict.get('token')
+                                token_from_auth_application_token = auth_dict.get('application_token')
                                 token_from_body = (
                                     data.get('token') or 
-                                    data.get('auth', {}).get('token') if isinstance(data.get('auth'), dict) else None or
+                                    token_from_auth_token or
+                                    token_from_auth_application_token or
                                     data.get('webhook_token') or
                                     data.get('secret') or
                                     data.get('auth_token')
                                 )
+                                # Логируем для диагностики
+                                if auth_dict:
+                                    logger.debug(f"🔍 Найден объект auth: {list(auth_dict.keys())}")
+                                    if token_from_auth_application_token:
+                                        logger.debug(f"✅ Токен найден в auth.application_token")
+                                    elif token_from_auth_token:
+                                        logger.debug(f"✅ Токен найден в auth.token")
                             
                             # Также проверяем распарсенные form-data напрямую
                             token_from_form_data = None
