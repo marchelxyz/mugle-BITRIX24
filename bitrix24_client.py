@@ -4,6 +4,7 @@
 import requests
 import os
 import logging
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -1692,3 +1693,203 @@ class Bitrix24Client:
         except Exception as e:
             logger.debug(f"Ошибка при получении подразделения {department_id}: {e}")
             return None
+    
+    def get_tasks(self, filter_params: Dict = None, select: List[str] = None) -> List[Dict]:
+        """
+        Получение списка задач из Bitrix24
+        
+        Args:
+            filter_params: Параметры фильтрации (например, {"<DEADLINE": "2024-01-01", "!STATUS": "5"})
+                          Поддерживаются операторы: <, >, <=, >=, ! (отрицание)
+            select: Список полей для выборки (по умолчанию основные поля)
+            
+        Returns:
+            Список задач
+        """
+        try:
+            params = {}
+            
+            # Добавляем фильтры
+            if filter_params:
+                # Bitrix24 использует формат фильтров через FILTER
+                # Операторы указываются в ключах: "<DEADLINE", ">=DEADLINE", "!STATUS"
+                params["FILTER"] = filter_params
+            
+            # Добавляем поля для выборки
+            if select:
+                params["SELECT"] = select
+            else:
+                # По умолчанию выбираем основные поля
+                params["SELECT"] = [
+                    "ID", "TITLE", "DESCRIPTION", "DEADLINE", "STATUS",
+                    "RESPONSIBLE_ID", "CREATED_BY", "CREATED_DATE", "CHANGED_DATE"
+                ]
+            
+            # Добавляем параметры для получения всех задач (без пагинации)
+            params["ORDER"] = {"DEADLINE": "ASC"}  # Сортируем по дедлайну
+            
+            result = self._make_request("tasks.task.list", params)
+            
+            if result.get("result"):
+                tasks = result["result"].get("tasks", [])
+                # Преобразуем формат ответа в более удобный
+                formatted_tasks = []
+                
+                # Bitrix24 возвращает задачи в формате словаря {task_id: task_data}
+                if isinstance(tasks, dict):
+                    for task_id, task_data in tasks.items():
+                        formatted_task = {
+                            "id": task_id,
+                            "title": task_data.get("TITLE", ""),
+                            "description": task_data.get("DESCRIPTION", ""),
+                            "deadline": task_data.get("DEADLINE"),
+                            "status": task_data.get("STATUS"),
+                            "responsibleId": task_data.get("RESPONSIBLE_ID"),
+                            "createdBy": task_data.get("CREATED_BY"),
+                            "createdDate": task_data.get("CREATED_DATE"),
+                            "changedDate": task_data.get("CHANGED_DATE")
+                        }
+                        formatted_tasks.append(formatted_task)
+                elif isinstance(tasks, list):
+                    # Если задачи возвращаются как список
+                    for task_data in tasks:
+                        task_id = task_data.get("ID") or task_data.get("id")
+                        if task_id:
+                            formatted_task = {
+                                "id": task_id,
+                                "title": task_data.get("TITLE", ""),
+                                "description": task_data.get("DESCRIPTION", ""),
+                                "deadline": task_data.get("DEADLINE"),
+                                "status": task_data.get("STATUS"),
+                                "responsibleId": task_data.get("RESPONSIBLE_ID"),
+                                "createdBy": task_data.get("CREATED_BY"),
+                                "createdDate": task_data.get("CREATED_DATE"),
+                                "changedDate": task_data.get("CHANGED_DATE")
+                            }
+                            formatted_tasks.append(formatted_task)
+                
+                return formatted_tasks
+            
+            return []
+        except Exception as e:
+            logger.error(f"Ошибка при получении задач: {e}", exc_info=True)
+            return []
+    
+    def get_task_by_id(self, task_id: int) -> Optional[Dict]:
+        """
+        Получение задачи по ID
+        
+        Args:
+            task_id: ID задачи
+            
+        Returns:
+            Информация о задаче или None
+        """
+        try:
+            result = self._make_request("tasks.task.get", {"taskId": task_id})
+            
+            if result.get("result") and result["result"].get("task"):
+                task_data = result["result"]["task"]
+                return {
+                    "id": task_id,
+                    "title": task_data.get("TITLE", ""),
+                    "description": task_data.get("DESCRIPTION", ""),
+                    "deadline": task_data.get("DEADLINE"),
+                    "status": task_data.get("STATUS"),
+                    "responsibleId": task_data.get("RESPONSIBLE_ID"),
+                    "createdBy": task_data.get("CREATED_BY"),
+                    "createdDate": task_data.get("CREATED_DATE"),
+                    "changedDate": task_data.get("CHANGED_DATE")
+                }
+            
+            return None
+        except Exception as e:
+            logger.error(f"Ошибка при получении задачи {task_id}: {e}", exc_info=True)
+            return None
+    
+    def get_recent_task_comments(self, since: datetime = None) -> List[Dict]:
+        """
+        Получение недавних комментариев к задачам
+        
+        Args:
+            since: Дата начала периода (по умолчанию последний час)
+            
+        Returns:
+            Список комментариев
+        """
+        try:
+            if not since:
+                since = datetime.now() - timedelta(hours=1)
+            
+            # Получаем все задачи, которые были изменены недавно
+            # Затем получаем комментарии для этих задач
+            filter_params = {
+                "CHANGED_DATE": f">={since.strftime('%Y-%m-%d %H:%M:%S')}"
+            }
+            
+            tasks = self.get_tasks(filter_params=filter_params)
+            all_comments = []
+            
+            for task in tasks:
+                task_id = task.get("id")
+                if not task_id:
+                    continue
+                
+                try:
+                    # Получаем комментарии для задачи
+                    comments_result = self._make_request("tasks.task.commentitem.getlist", {
+                        "TASKID": task_id
+                    })
+                    
+                    if comments_result.get("result"):
+                        comments = comments_result["result"]
+                        if isinstance(comments, list):
+                            for comment in comments:
+                                # Проверяем, что комментарий создан после указанной даты
+                                comment_date_str = comment.get("POST_DATE")
+                                if comment_date_str:
+                                    try:
+                                        from datetime import datetime
+                                        comment_date = datetime.fromisoformat(comment_date_str.replace('Z', '+00:00'))
+                                        if comment_date.replace(tzinfo=None) >= since:
+                                            formatted_comment = {
+                                                "id": comment.get("ID"),
+                                                "taskId": task_id,
+                                                "text": comment.get("POST_MESSAGE", ""),
+                                                "authorId": comment.get("AUTHOR_ID"),
+                                                "postDate": comment_date_str,
+                                                "task": task  # Добавляем информацию о задаче
+                                            }
+                                            all_comments.append(formatted_comment)
+                                    except Exception as date_error:
+                                        logger.debug(f"Ошибка при парсинге даты комментария: {date_error}")
+                                        # Если не удалось распарсить дату, добавляем комментарий
+                                        formatted_comment = {
+                                            "id": comment.get("ID"),
+                                            "taskId": task_id,
+                                            "text": comment.get("POST_MESSAGE", ""),
+                                            "authorId": comment.get("AUTHOR_ID"),
+                                            "postDate": comment_date_str,
+                                            "task": task
+                                        }
+                                        all_comments.append(formatted_comment)
+                        elif isinstance(comments, dict):
+                            # Если результат - один комментарий
+                            comment = comments
+                            formatted_comment = {
+                                "id": comment.get("ID"),
+                                "taskId": task_id,
+                                "text": comment.get("POST_MESSAGE", ""),
+                                "authorId": comment.get("AUTHOR_ID"),
+                                "postDate": comment.get("POST_DATE"),
+                                "task": task
+                            }
+                            all_comments.append(formatted_comment)
+                except Exception as comment_error:
+                    logger.debug(f"Ошибка при получении комментариев для задачи {task_id}: {comment_error}")
+                    continue
+            
+            return all_comments
+        except Exception as e:
+            logger.error(f"Ошибка при получении комментариев: {e}", exc_info=True)
+            return []

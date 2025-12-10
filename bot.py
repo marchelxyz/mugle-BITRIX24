@@ -31,6 +31,12 @@ except ImportError:
     DATABASE_AVAILABLE = False
     logger.warning("⚠️ Модуль database не найден. PostgreSQL функции будут недоступны.")
 try:
+    from task_notifications import TaskNotificationService
+    TASK_NOTIFICATIONS_AVAILABLE = True
+except ImportError:
+    TASK_NOTIFICATIONS_AVAILABLE = False
+    logger.warning("⚠️ Модуль task_notifications не найден. Уведомления о задачах будут недоступны.")
+try:
     from aiohttp import web
     AIOHTTP_AVAILABLE = True
 except ImportError:
@@ -1674,6 +1680,39 @@ def main():
                         
                         # Настраиваем команды бота для доступа через меню прикрепления файлов
                         await setup_bot_commands(application)
+                        
+                        # Инициализируем систему уведомлений о задачах
+                        if TASK_NOTIFICATIONS_AVAILABLE:
+                            telegram_group_id = os.getenv("TELEGRAM_SUPERGROUP_ID")
+                            if telegram_group_id:
+                                try:
+                                    telegram_group_id_int = int(telegram_group_id)
+                                    notification_service = TaskNotificationService(
+                                        bitrix_client=bitrix_client,
+                                        telegram_bot=application.bot,
+                                        telegram_group_id=telegram_group_id_int
+                                    )
+                                    
+                                    # Запускаем периодическую проверку задач в фоне
+                                    async def periodic_task_check():
+                                        """Периодическая проверка задач"""
+                                        check_interval = notification_service.check_interval_minutes * 60
+                                        while True:
+                                            try:
+                                                await notification_service.run_periodic_check()
+                                            except Exception as check_error:
+                                                logger.error(f"Ошибка при периодической проверке задач: {check_error}", exc_info=True)
+                                            await asyncio.sleep(check_interval)
+                                    
+                                    # Запускаем задачу в фоне
+                                    asyncio.create_task(periodic_task_check())
+                                    logger.info(f"✅ Система уведомлений о задачах инициализирована для группы {telegram_group_id_int}")
+                                except (ValueError, TypeError) as group_id_error:
+                                    logger.warning(f"⚠️ Неверный формат TELEGRAM_SUPERGROUP_ID: {telegram_group_id}. Уведомления отключены.")
+                                except Exception as notification_error:
+                                    logger.error(f"❌ Ошибка при инициализации системы уведомлений: {notification_error}", exc_info=True)
+                            else:
+                                logger.info("ℹ️ TELEGRAM_SUPERGROUP_ID не установлен. Уведомления о задачах отключены.")
                     except Exception as init_error:
                         logger.error(f"КРИТИЧЕСКАЯ ОШИБКА при инициализации Telegram приложения: {init_error}", exc_info=True)
                         # Не поднимаем исключение, чтобы сервер продолжал работать
@@ -2466,6 +2505,39 @@ def main():
         async def post_init_polling(app: Application):
             await setup_menu_button(app)
             await setup_bot_commands(app)
+            
+            # Инициализируем систему уведомлений о задачах
+            if TASK_NOTIFICATIONS_AVAILABLE:
+                telegram_group_id = os.getenv("TELEGRAM_SUPERGROUP_ID")
+                if telegram_group_id:
+                    try:
+                        telegram_group_id_int = int(telegram_group_id)
+                        notification_service = TaskNotificationService(
+                            bitrix_client=bitrix_client,
+                            telegram_bot=app.bot,
+                            telegram_group_id=telegram_group_id_int
+                        )
+                        
+                        # Запускаем периодическую проверку задач в фоне
+                        async def periodic_task_check():
+                            """Периодическая проверка задач"""
+                            check_interval = notification_service.check_interval_minutes * 60
+                            while True:
+                                try:
+                                    await notification_service.run_periodic_check()
+                                except Exception as check_error:
+                                    logger.error(f"Ошибка при периодической проверке задач: {check_error}", exc_info=True)
+                                await asyncio.sleep(check_interval)
+                        
+                        # Запускаем задачу в фоне
+                        asyncio.create_task(periodic_task_check())
+                        logger.info(f"✅ Система уведомлений о задачах инициализирована для группы {telegram_group_id_int}")
+                    except (ValueError, TypeError) as group_id_error:
+                        logger.warning(f"⚠️ Неверный формат TELEGRAM_SUPERGROUP_ID: {telegram_group_id}. Уведомления отключены.")
+                    except Exception as notification_error:
+                        logger.error(f"❌ Ошибка при инициализации системы уведомлений: {notification_error}", exc_info=True)
+                else:
+                    logger.info("ℹ️ TELEGRAM_SUPERGROUP_ID не установлен. Уведомления о задачах отключены.")
         
         application.post_init = post_init_polling
         application.run_polling(allowed_updates=Update.ALL_TYPES)
