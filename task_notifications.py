@@ -447,13 +447,20 @@ class TaskNotificationService:
         except Exception as e:
             logger.error(f"❌ Ошибка при обработке события задачи {event}: {e}", exc_info=True)
     
-    async def handle_task_comment_event(self, event: str, comment_data: Dict):
+    async def handle_task_comment_event(self, event: str, comment_data: Dict, auth_data: Dict = None):
         """
         Обработка события комментария к задаче из вебхука Bitrix24
+        
+        Оптимизированная версия:
+        1. Получает полную информацию о комментарии через REST API Bitrix24
+        2. Получает информацию о задаче (создатель, исполнитель)
+        3. Находит Telegram ID через базу данных для зарегистрированных пользователей
+        4. Отправляет уведомления только зарегистрированным пользователям (избегает спама)
         
         Args:
             event: Тип события (ONTASKCOMMENTADD, ONTASKCOMMENTUPDATE, ONTASKCOMMENTDELETE)
             comment_data: Данные комментария из вебхука
+            auth_data: Данные авторизации из вебхука (содержит application_token для REST API)
         """
         try:
             task_id = comment_data.get('TASK_ID') or comment_data.get('taskId') or comment_data.get('TASKID')
@@ -462,42 +469,157 @@ class TaskNotificationService:
             logger.debug(f"Извлеченные данные из комментария: task_id={task_id}, comment_id={comment_id}")
             logger.debug(f"Полные данные комментария: {comment_data}")
             
-            if not task_id:
-                logger.warning(f"Не удалось получить ID задачи из данных комментария: {comment_data}")
+            if not task_id or not comment_id:
+                logger.warning(f"Не удалось получить ID задачи или комментария из данных: {comment_data}")
                 return
             
             task_id_int = int(task_id)
+            comment_id_int = int(comment_id)
             event_upper = event.upper()
             
-            # Получаем информацию о задаче для формирования ссылки
+            # Создаем временный Bitrix24Client с токеном из вебхука для получения полной информации
+            webhook_bitrix_client = None
+            if auth_data and auth_data.get('application_token') and auth_data.get('domain'):
+                try:
+                    from bitrix24_client import Bitrix24Client
+                    webhook_bitrix_client = Bitrix24Client(
+                        domain=auth_data['domain'],
+                        webhook_token=auth_data['application_token']
+                    )
+                    logger.debug(f"✅ Создан временный Bitrix24Client для получения полной информации через REST API")
+                except Exception as e:
+                    logger.warning(f"⚠️ Не удалось создать временный Bitrix24Client: {e}")
+                    logger.info("💡 Используем основной Bitrix24Client")
+            
+            # Используем временный клиент или основной
+            api_client = webhook_bitrix_client if webhook_bitrix_client else self.bitrix_client
+            
+            # Получаем полную информацию о комментарии через REST API
+            full_comment_info = None
+            if 'ONTASKCOMMENTADD' in event_upper or 'ONTASKCOMMENTUPDATE' in event_upper:
+                try:
+                    full_comment_info = api_client.get_task_comment(task_id_int, comment_id_int)
+                    if full_comment_info:
+                        logger.info(f"✅ Получена полная информация о комментарии {comment_id_int} через REST API")
+                        logger.debug(f"Автор комментария: {full_comment_info.get('authorId')}")
+                    else:
+                        logger.warning(f"⚠️ Не удалось получить полную информацию о комментарии {comment_id_int}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Ошибка при получении комментария через REST API: {e}")
+            
+            # Получаем информацию о задаче для получения создателя и исполнителя
             try:
-                task_info = self.bitrix_client.get_task_by_id(task_id_int)
-                task_title = task_info.get('title', 'Без названия') if task_info else 'Без названия'
-                responsible_id = task_info.get('responsibleId') if task_info else None
+                task_info = api_client.get_task_by_id(task_id_int)
+                if task_info:
+                    task_title = task_info.get('title', 'Без названия')
+                    responsible_id = task_info.get('responsibleId')
+                    created_by_id = task_info.get('createdBy')
+                    logger.info(f"✅ Получена информация о задаче {task_id_int}: создатель={created_by_id}, исполнитель={responsible_id}")
+                else:
+                    logger.warning(f"⚠️ Не удалось получить информацию о задаче {task_id_int}")
+                    task_title = 'Без названия'
+                    responsible_id = None
+                    created_by_id = None
             except Exception as e:
-                logger.debug(f"Не удалось получить информацию о задаче {task_id_int}: {e}")
+                logger.warning(f"⚠️ Ошибка при получении задачи {task_id_int}: {e}")
                 task_title = 'Без названия'
                 responsible_id = None
+                created_by_id = None
             
             # Формируем ссылку на задачу
             task_url = self.bitrix_client.get_task_url(task_id_int, int(responsible_id) if responsible_id else None)
             
-            # Получаем автора комментария и ответственного за задачу для упоминания
-            author_id = comment_data.get('AUTHOR_ID') or comment_data.get('authorId') or comment_data.get('AUTHOR_ID')
+            # Находим Telegram ID через базу данных для зарегистрированных пользователей
             telegram_ids = []
             
-            # Добавляем ответственного за задачу (если он есть)
+            # Получаем автора комментария (из полной информации или из вебхука)
+            author_id = None
+            if full_comment_info:
+                author_id = full_comment_info.get('authorId')
+            else:
+                author_id = comment_data.get('AUTHOR_ID') or comment_data.get('authorId') or comment_data.get('AUTHORID')
+            
+            # Ищем Telegram ID для создателя задачи (если он зарегистрирован)
+            if created_by_id:
+                try:
+                    if DATABASE_AVAILABLE:
+                        created_by_telegram_id = database.get_telegram_id_by_bitrix_id(int(created_by_id))
+                        if created_by_telegram_id:
+                            telegram_ids.append(created_by_telegram_id)
+                            logger.info(f"✅ Найден Telegram ID для создателя задачи: {created_by_telegram_id}")
+                        else:
+                            logger.debug(f"Создатель задачи {created_by_id} не зарегистрирован в системе")
+                    else:
+                        # Fallback: пробуем через Bitrix24Client
+                        created_by_telegram_id = self.bitrix_client.get_user_telegram_id(int(created_by_id))
+                        if created_by_telegram_id:
+                            telegram_ids.append(created_by_telegram_id)
+                except Exception as e:
+                    logger.debug(f"Не удалось найти Telegram ID для создателя {created_by_id}: {e}")
+            
+            # Ищем Telegram ID для исполнителя задачи (если он зарегистрирован)
             if responsible_id:
                 try:
-                    responsible_telegram_id = self.bitrix_client.get_user_telegram_id(int(responsible_id))
-                    if responsible_telegram_id:
-                        telegram_ids.append(responsible_telegram_id)
+                    if DATABASE_AVAILABLE:
+                        responsible_telegram_id = database.get_telegram_id_by_bitrix_id(int(responsible_id))
+                        if responsible_telegram_id:
+                            if responsible_telegram_id not in telegram_ids:
+                                telegram_ids.append(responsible_telegram_id)
+                                logger.info(f"✅ Найден Telegram ID для исполнителя задачи: {responsible_telegram_id}")
+                        else:
+                            logger.debug(f"Исполнитель задачи {responsible_id} не зарегистрирован в системе")
+                    else:
+                        # Fallback: пробуем через Bitrix24Client
+                        responsible_telegram_id = self.bitrix_client.get_user_telegram_id(int(responsible_id))
+                        if responsible_telegram_id and responsible_telegram_id not in telegram_ids:
+                            telegram_ids.append(responsible_telegram_id)
                 except Exception as e:
-                    logger.debug(f"Не удалось получить Telegram ID для ответственного {responsible_id}: {e}")
+                    logger.debug(f"Не удалось найти Telegram ID для исполнителя {responsible_id}: {e}")
+            
+            # Ищем Telegram ID для автора комментария (если он зарегистрирован и отличается от создателя/исполнителя)
+            if author_id:
+                try:
+                    author_id_int = int(author_id)
+                    # Не добавляем автора, если он уже в списке (создатель или исполнитель)
+                    should_add_author = True
+                    if created_by_id and author_id_int == int(created_by_id):
+                        should_add_author = False
+                    if responsible_id and author_id_int == int(responsible_id):
+                        should_add_author = False
+                    
+                    if should_add_author:
+                        if DATABASE_AVAILABLE:
+                            author_telegram_id = database.get_telegram_id_by_bitrix_id(author_id_int)
+                            if author_telegram_id:
+                                if author_telegram_id not in telegram_ids:
+                                    telegram_ids.append(author_telegram_id)
+                                    logger.info(f"✅ Найден Telegram ID для автора комментария: {author_telegram_id}")
+                            else:
+                                logger.debug(f"Автор комментария {author_id_int} не зарегистрирован в системе")
+                        else:
+                            # Fallback: пробуем через Bitrix24Client
+                            author_telegram_id = self.bitrix_client.get_user_telegram_id(author_id_int)
+                            if author_telegram_id and author_telegram_id not in telegram_ids:
+                                telegram_ids.append(author_telegram_id)
+                except Exception as e:
+                    logger.debug(f"Не удалось найти Telegram ID для автора комментария {author_id}: {e}")
+            
+            # Если нет зарегистрированных пользователей, не отправляем уведомление (избегаем спама)
+            if not telegram_ids:
+                logger.info(f"ℹ️ Нет зарегистрированных пользователей для уведомления о комментарии {comment_id_int} к задаче {task_id_int}")
+                logger.info(f"   Создатель: {created_by_id}, Исполнитель: {responsible_id}, Автор: {author_id}")
+                return
             
             # Формируем сообщение в зависимости от типа события
             if 'ONTASKCOMMENTADD' in event_upper:
-                message = f"в задаче <a href='{task_url}'>«{task_title}»</a> новый комментарий"
+                # Если есть текст комментария, добавляем его в сообщение
+                comment_text = ""
+                if full_comment_info and full_comment_info.get('postMessage'):
+                    comment_text_preview = full_comment_info['postMessage'][:100]
+                    if len(full_comment_info['postMessage']) > 100:
+                        comment_text_preview += "..."
+                    comment_text = f": {comment_text_preview}"
+                message = f"в задаче <a href='{task_url}'>«{task_title}»</a> новый комментарий{comment_text}"
                 notification_type = "comment_added"
             elif 'ONTASKCOMMENTUPDATE' in event_upper:
                 message = f"в задаче <a href='{task_url}'>«{task_title}»</a> обновлен комментарий"
@@ -515,13 +637,13 @@ class TaskNotificationService:
                 logger.debug(f"Уведомление для события {event} комментария {comment_id} уже отправлено")
                 return
             
-            # Отправляем уведомление в группу с упоминанием ответственного
-            await self._send_notification(message, telegram_ids if telegram_ids else None)
+            # Отправляем уведомление в группу с упоминанием зарегистрированных пользователей
+            await self._send_notification(message, telegram_ids)
             
             # Отмечаем уведомление как отправленное
             self._mark_notification_sent(notification_key, task_id_int, notification_type, str(comment_id))
             
-            logger.info(f"✅ Отправлено уведомление о событии {event} для комментария {comment_id} к задаче {task_id_int}")
+            logger.info(f"✅ Отправлено уведомление о событии {event} для комментария {comment_id} к задаче {task_id_int} (уведомлены: {len(telegram_ids)} пользователей)")
             
         except Exception as e:
             logger.error(f"❌ Ошибка при обработке события комментария {event}: {e}", exc_info=True)

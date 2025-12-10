@@ -235,6 +235,24 @@ def get_bitrix_user_id_by_telegram_id(telegram_id: int) -> Optional[int]:
         return None
 
 
+def get_telegram_id_by_bitrix_id(bitrix_user_id: int) -> Optional[int]:
+    """Получение Telegram ID по Bitrix24 User ID"""
+    if _connection_pool is None:
+        return None
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT telegram_id FROM telegram_to_bitrix WHERE bitrix_user_id = %s",
+                    (bitrix_user_id,)
+                )
+                result = cur.fetchone()
+                return result[0] if result else None
+    except Exception as e:
+        logger.debug(f"Ошибка при получении Telegram ID по Bitrix ID {bitrix_user_id}: {e}")
+        return None
+
+
 def set_telegram_to_bitrix_mapping(telegram_id: int, bitrix_user_id: int) -> bool:
     """Сохранение маппинга Telegram ID -> Bitrix24 User ID"""
     global _connection_pool

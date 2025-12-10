@@ -1811,6 +1811,40 @@ class Bitrix24Client:
             logger.error(f"Ошибка при получении задачи {task_id}: {e}", exc_info=True)
             return None
     
+    def get_task_comment(self, task_id: int, comment_id: int) -> Optional[Dict]:
+        """
+        Получение комментария к задаче по ID
+        
+        Args:
+            task_id: ID задачи
+            comment_id: ID комментария
+            
+        Returns:
+            Информация о комментарии или None
+        """
+        try:
+            result = self._make_request("tasks.task.comment.get", {
+                "TASKID": task_id,
+                "COMMENTID": comment_id
+            })
+            
+            if result.get("result") and result["result"].get("comment"):
+                comment_data = result["result"]["comment"]
+                return {
+                    "id": comment_id,
+                    "taskId": task_id,
+                    "authorId": comment_data.get("AUTHOR_ID"),
+                    "postMessage": comment_data.get("POST_MESSAGE"),
+                    "createdDate": comment_data.get("CREATED_DATE"),
+                    "updatedDate": comment_data.get("UPDATED_DATE"),
+                    "files": comment_data.get("FILES", [])
+                }
+            
+            return None
+        except Exception as e:
+            logger.error(f"Ошибка при получении комментария {comment_id} к задаче {task_id}: {e}", exc_info=True)
+            return None
+    
     def get_recent_task_comments(self, since: datetime = None) -> List[Dict]:
         """
         Получение недавних комментариев к задачам

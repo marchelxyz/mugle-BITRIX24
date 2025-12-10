@@ -2852,9 +2852,11 @@ def main():
                                         logger.info(f"💡 Проверьте, что TELEGRAM_SUPERGROUP_ID установлен в переменных окружения")
                                     else:
                                         # Отправляем уведомления о комментариях через TaskNotificationService
+                                        # Передаем auth данные для создания временного Bitrix24Client с токеном из вебхука
                                         try:
                                             logger.info(f"📤 Отправка уведомления о событии {event} для комментария {comment_id}...")
-                                            await task_notification_service.handle_task_comment_event(event, comment_data)
+                                            auth_data = data.get('auth', {})
+                                            await task_notification_service.handle_task_comment_event(event, comment_data, auth_data)
                                             logger.info(f"✅ Обработано событие комментария {comment_id} к задаче {task_id}: {event}")
                                         except Exception as notif_error:
                                             logger.error(f"❌ Ошибка при обработке уведомления о комментарии {comment_id}: {notif_error}", exc_info=True)
