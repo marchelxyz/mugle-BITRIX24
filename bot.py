@@ -2557,8 +2557,17 @@ def main():
                         # Проверяем тип события
                         event = data.get('event', '')
                         data_obj = data.get('data', {})
+                        event_handler_id = data.get('event_handler_id')
+                        ts = data.get('ts')
                         
                         logger.info(f"Получено событие от Bitrix24: {event}")
+                        
+                        # Сохраняем полный массив данных вебхука в базу данных
+                        if DATABASE_AVAILABLE:
+                            try:
+                                database.save_webhook_event(event, data, event_handler_id, ts)
+                            except Exception as save_error:
+                                logger.warning(f"⚠️ Не удалось сохранить данные вебхука в БД: {save_error}")
                         
                         # Обрабатываем события пользователей (добавление и обновление)
                         if 'USERUPDATE' in event.upper() or 'USERADD' in event.upper() or (event.upper().startswith('ONUSER') and 'USER' in event.upper()):
