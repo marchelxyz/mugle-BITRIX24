@@ -2654,11 +2654,21 @@ def main():
                                 logger.info(f"📋 Получено событие задачи: {event}")
                                 
                                 # Извлекаем данные задачи
+                                # Bitrix24 отправляет данные в FIELDS_AFTER (для добавления/обновления) или FIELDS_BEFORE (для удаления)
                                 task_data = None
-                                if isinstance(data_obj, dict) and 'FIELDS' in data_obj:
-                                    task_data = data_obj['FIELDS']
-                                elif isinstance(data_obj, dict) and 'ID' in data_obj:
-                                    task_data = data_obj
+                                if isinstance(data_obj, dict):
+                                    # Приоритет 1: FIELDS_AFTER (для событий добавления/обновления)
+                                    if 'FIELDS_AFTER' in data_obj and data_obj['FIELDS_AFTER']:
+                                        task_data = data_obj['FIELDS_AFTER']
+                                    # Приоритет 2: FIELDS_BEFORE (для событий удаления)
+                                    elif 'FIELDS_BEFORE' in data_obj and data_obj['FIELDS_BEFORE']:
+                                        task_data = data_obj['FIELDS_BEFORE']
+                                    # Приоритет 3: FIELDS (старый формат)
+                                    elif 'FIELDS' in data_obj:
+                                        task_data = data_obj['FIELDS']
+                                    # Приоритет 4: данные напрямую в data_obj
+                                    elif 'ID' in data_obj:
+                                        task_data = data_obj
                                 elif isinstance(data_obj, list) and len(data_obj) > 0:
                                     task_data = data_obj[0]
                                 
@@ -2689,11 +2699,21 @@ def main():
                                 logger.info(f"💬 Получено событие комментария к задаче: {event}")
                                 
                                 # Извлекаем данные комментария
+                                # Bitrix24 отправляет данные в FIELDS_AFTER (для добавления) или FIELDS_BEFORE (для удаления)
                                 comment_data = None
-                                if isinstance(data_obj, dict) and 'FIELDS' in data_obj:
-                                    comment_data = data_obj['FIELDS']
-                                elif isinstance(data_obj, dict):
-                                    comment_data = data_obj
+                                if isinstance(data_obj, dict):
+                                    # Приоритет 1: FIELDS_AFTER (для событий добавления/обновления)
+                                    if 'FIELDS_AFTER' in data_obj and data_obj['FIELDS_AFTER']:
+                                        comment_data = data_obj['FIELDS_AFTER']
+                                    # Приоритет 2: FIELDS_BEFORE (для событий удаления)
+                                    elif 'FIELDS_BEFORE' in data_obj and data_obj['FIELDS_BEFORE']:
+                                        comment_data = data_obj['FIELDS_BEFORE']
+                                    # Приоритет 3: FIELDS (старый формат)
+                                    elif 'FIELDS' in data_obj:
+                                        comment_data = data_obj['FIELDS']
+                                    # Приоритет 4: данные напрямую в data_obj
+                                    elif 'ID' in data_obj or 'TASK_ID' in data_obj:
+                                        comment_data = data_obj
                                 elif isinstance(data_obj, list) and len(data_obj) > 0:
                                     comment_data = data_obj[0]
                                 

@@ -400,6 +400,9 @@ class TaskNotificationService:
             task_id = comment_data.get('TASK_ID') or comment_data.get('taskId') or comment_data.get('TASKID')
             comment_id = comment_data.get('ID') or comment_data.get('id')
             
+            logger.debug(f"Извлеченные данные из комментария: task_id={task_id}, comment_id={comment_id}")
+            logger.debug(f"Полные данные комментария: {comment_data}")
+            
             if not task_id:
                 logger.warning(f"Не удалось получить ID задачи из данных комментария: {comment_data}")
                 return
