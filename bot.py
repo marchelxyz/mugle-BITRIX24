@@ -84,6 +84,51 @@ THREAD_TO_DEPARTMENT_MAPPING: Dict[int, int] = {}
 # Используется в обработчике исходящего вебхука Bitrix24
 task_notification_service = None
 
+
+def parse_telegram_group_id() -> tuple[Optional[int], Optional[int]]:
+    """
+    Парсит ID Telegram группы и под id раздела (thread_id) из переменных окружения.
+    
+    Поддерживает два формата:
+    1. Старый формат: TELEGRAM_SUPERGROUP_ID=-1001981439085_4987 (ID группы + под id)
+    2. Новый формат: TELEGRAM_SUPERGROUP_ID=-1001981439085 и TELEGRAM_SUPERGROUP_THREAD_ID=4987
+    
+    Returns:
+        tuple: (group_id, thread_id) где оба могут быть None
+    """
+    telegram_group_id = os.getenv("TELEGRAM_SUPERGROUP_ID")
+    telegram_thread_id = os.getenv("TELEGRAM_SUPERGROUP_THREAD_ID")
+    
+    group_id = None
+    thread_id = None
+    
+    if telegram_group_id:
+        # Проверяем старый формат с подчеркиванием (например: -1001981439085_4987)
+        if '_' in telegram_group_id:
+            parts = telegram_group_id.split('_', 1)
+            try:
+                group_id = int(parts[0])
+                thread_id = int(parts[1])
+                logger.info(f"ℹ️ Обнаружен старый формат TELEGRAM_SUPERGROUP_ID с под id: группа={group_id}, thread_id={thread_id}")
+                logger.info(f"💡 Рекомендуется использовать отдельные переменные: TELEGRAM_SUPERGROUP_ID={group_id} и TELEGRAM_SUPERGROUP_THREAD_ID={thread_id}")
+            except (ValueError, IndexError):
+                logger.warning(f"⚠️ Неверный формат TELEGRAM_SUPERGROUP_ID: {telegram_group_id}")
+        else:
+            # Новый формат - только ID группы
+            try:
+                group_id = int(telegram_group_id)
+            except ValueError:
+                logger.warning(f"⚠️ Неверный формат TELEGRAM_SUPERGROUP_ID: {telegram_group_id}")
+    
+    # Если thread_id указан отдельно, используем его (приоритет над старым форматом)
+    if telegram_thread_id:
+        try:
+            thread_id = int(telegram_thread_id)
+        except ValueError:
+            logger.warning(f"⚠️ Неверный формат TELEGRAM_SUPERGROUP_THREAD_ID: {telegram_thread_id}")
+    
+    return group_id, thread_id
+
 # Инициализация PostgreSQL базы данных
 if DATABASE_AVAILABLE:
     try:
@@ -213,60 +258,58 @@ async def log_telegram_group_info(application: Application):
     """
     Вывод информации о Telegram супергруппе и разделах (threads) в консоль
     """
-    telegram_group_id = os.getenv("TELEGRAM_SUPERGROUP_ID")
-    if not telegram_group_id:
+    group_id, thread_id = parse_telegram_group_id()
+    
+    if not group_id:
         logger.info("ℹ️ TELEGRAM_SUPERGROUP_ID не установлен. Информация о группе не будет выведена.")
         return
     
+    logger.info("")
+    logger.info("=" * 80)
+    logger.info("📱 ИНФОРМАЦИЯ О TELEGRAM СУПЕРГРУППЕ:")
+    logger.info("=" * 80)
+    
     try:
-        telegram_group_id_int = int(telegram_group_id)
+        # Получаем информацию о чате
+        chat = await application.bot.get_chat(chat_id=group_id)
         
-        logger.info("")
-        logger.info("=" * 80)
-        logger.info("📱 ИНФОРМАЦИЯ О TELEGRAM СУПЕРГРУППЕ:")
-        logger.info("=" * 80)
+        logger.info(f"🆔 ID группы: {chat.id}")
+        logger.info(f"📝 Название: {chat.title or 'Без названия'}")
+        logger.info(f"📋 Тип: {chat.type}")
         
-        try:
-            # Получаем информацию о чате
-            chat = await application.bot.get_chat(chat_id=telegram_group_id_int)
-            
-            logger.info(f"🆔 ID группы: {chat.id}")
-            logger.info(f"📝 Название: {chat.title or 'Без названия'}")
-            logger.info(f"📋 Тип: {chat.type}")
-            
-            if chat.description:
-                logger.info(f"📄 Описание: {chat.description[:100]}...")
-            
-            # Выводим текущий маппинг thread_id -> department_id если он есть
-            if THREAD_TO_DEPARTMENT_MAPPING:
-                logger.info("")
-                logger.info("-" * 80)
-                logger.info("🔗 ТЕКУЩИЙ МАППИНГ THREAD_ID -> DEPARTMENT_ID:")
-                logger.info("-" * 80)
-                logger.info(f"{'Thread ID':<20} | {'Department ID':<20}")
-                logger.info("-" * 80)
-                for thread_id, dept_id in sorted(THREAD_TO_DEPARTMENT_MAPPING.items()):
-                    logger.info(f"{str(thread_id):<20} | {str(dept_id):<20}")
-                logger.info(f"✅ Всего маппингов: {len(THREAD_TO_DEPARTMENT_MAPPING)}")
-            else:
-                logger.info("")
-                logger.info("ℹ️ Маппинг thread_id -> department_id не настроен")
-                logger.info("💡 Для настройки используйте переменную THREAD_DEPARTMENT_MAPPING")
-            
-        except Exception as chat_error:
-            logger.error(f"❌ Ошибка при получении информации о группе: {chat_error}")
-            logger.info("💡 Проверьте:")
-            logger.info(f"   1. Правильность TELEGRAM_SUPERGROUP_ID: {telegram_group_id}")
-            logger.info("   2. Что бот добавлен в группу")
-            logger.info("   3. Что бот имеет права на чтение информации о группе")
+        if thread_id:
+            logger.info(f"🧵 ID раздела (thread_id): {thread_id}")
         
-        logger.info("=" * 80)
-        logger.info("")
+        if chat.description:
+            logger.info(f"📄 Описание: {chat.description[:100]}...")
         
-    except (ValueError, TypeError) as group_id_error:
-        logger.warning(f"⚠️ Неверный формат TELEGRAM_SUPERGROUP_ID: {telegram_group_id}")
-    except Exception as e:
-        logger.error(f"❌ Ошибка при выводе информации о группе: {e}", exc_info=True)
+        # Выводим текущий маппинг thread_id -> department_id если он есть
+        if THREAD_TO_DEPARTMENT_MAPPING:
+            logger.info("")
+            logger.info("-" * 80)
+            logger.info("🔗 ТЕКУЩИЙ МАППИНГ THREAD_ID -> DEPARTMENT_ID:")
+            logger.info("-" * 80)
+            logger.info(f"{'Thread ID':<20} | {'Department ID':<20}")
+            logger.info("-" * 80)
+            for thread_id_mapping, dept_id in sorted(THREAD_TO_DEPARTMENT_MAPPING.items()):
+                logger.info(f"{str(thread_id_mapping):<20} | {str(dept_id):<20}")
+            logger.info(f"✅ Всего маппингов: {len(THREAD_TO_DEPARTMENT_MAPPING)}")
+        else:
+            logger.info("")
+            logger.info("ℹ️ Маппинг thread_id -> department_id не настроен")
+            logger.info("💡 Для настройки используйте переменную THREAD_DEPARTMENT_MAPPING")
+        
+    except Exception as chat_error:
+        logger.error(f"❌ Ошибка при получении информации о группе: {chat_error}")
+        logger.info("💡 Проверьте:")
+        logger.info(f"   1. Правильность TELEGRAM_SUPERGROUP_ID: {group_id}")
+        if thread_id:
+            logger.info(f"   2. Правильность TELEGRAM_SUPERGROUP_THREAD_ID: {thread_id}")
+        logger.info("   3. Что бот добавлен в группу")
+        logger.info("   4. Что бот имеет права на чтение информации о группе")
+    
+    logger.info("=" * 80)
+    logger.info("")
 
 
 def parse_initial_message(text: str, bot_username: str) -> Optional[str]:
@@ -616,17 +659,16 @@ async def create_task_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def group_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда для получения информации о Telegram группе и разделах"""
     try:
-        telegram_group_id = os.getenv("TELEGRAM_SUPERGROUP_ID")
-        if not telegram_group_id:
+        group_id, thread_id = parse_telegram_group_id()
+        
+        if not group_id:
             await update.message.reply_text(
                 "ℹ️ TELEGRAM_SUPERGROUP_ID не установлен. Информация о группе недоступна."
             )
             return
         
-        telegram_group_id_int = int(telegram_group_id)
-        
         # Получаем информацию о чате
-        chat = await context.bot.get_chat(chat_id=telegram_group_id_int)
+        chat = await context.bot.get_chat(chat_id=group_id)
         
         response_text = (
             f"📱 **Информация о Telegram супергруппе:**\n\n"
@@ -635,20 +677,21 @@ async def group_info_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"📋 Тип: {chat.type}\n"
         )
         
+        if thread_id:
+            response_text += f"🧵 ID раздела (thread_id): `{thread_id}`\n"
+        
         if chat.description:
             response_text += f"📄 Описание: {chat.description[:200]}...\n"
         
         # Добавляем информацию о маппинге
         if THREAD_TO_DEPARTMENT_MAPPING:
             response_text += "\n\n🔗 **Текущий маппинг Thread ID -> Department ID:**\n\n"
-            for thread_id, dept_id in sorted(THREAD_TO_DEPARTMENT_MAPPING.items()):
-                response_text += f"• Thread ID `{thread_id}` -> Department ID `{dept_id}`\n"
+            for thread_id_mapping, dept_id in sorted(THREAD_TO_DEPARTMENT_MAPPING.items()):
+                response_text += f"• Thread ID `{thread_id_mapping}` -> Department ID `{dept_id}`\n"
             response_text += f"\n✅ Всего маппингов: {len(THREAD_TO_DEPARTMENT_MAPPING)}"
         
         await update.message.reply_text(response_text, parse_mode='Markdown')
         
-    except (ValueError, TypeError) as e:
-        await update.message.reply_text(f"❌ Ошибка: Неверный формат TELEGRAM_SUPERGROUP_ID")
     except Exception as e:
         logger.error(f"Ошибка при получении информации о группе: {e}", exc_info=True)
         await update.message.reply_text(f"❌ Ошибка при получении информации о группе: {e}")
@@ -1794,14 +1837,13 @@ def main():
                         
                         # Инициализируем систему уведомлений о задачах
                         if TASK_NOTIFICATIONS_AVAILABLE:
-                            telegram_group_id = os.getenv("TELEGRAM_SUPERGROUP_ID")
-                            if telegram_group_id:
+                            group_id, thread_id = parse_telegram_group_id()
+                            if group_id:
                                 try:
-                                    telegram_group_id_int = int(telegram_group_id)
                                     notification_service = TaskNotificationService(
                                         bitrix_client=bitrix_client,
                                         telegram_bot=application.bot,
-                                        telegram_group_id=telegram_group_id_int
+                                        telegram_group_id=group_id
                                     )
                                     
                                     # Сохраняем в глобальную переменную для доступа из обработчика вебхука
@@ -1821,9 +1863,10 @@ def main():
                                     
                                     # Запускаем задачу в фоне
                                     asyncio.create_task(periodic_task_check())
-                                    logger.info(f"✅ Система уведомлений о задачах инициализирована для группы {telegram_group_id_int}")
-                                except (ValueError, TypeError) as group_id_error:
-                                    logger.warning(f"⚠️ Неверный формат TELEGRAM_SUPERGROUP_ID: {telegram_group_id}. Уведомления отключены.")
+                                    log_msg = f"✅ Система уведомлений о задачах инициализирована для группы {group_id}"
+                                    if thread_id:
+                                        log_msg += f" (thread_id: {thread_id})"
+                                    logger.info(log_msg)
                                 except Exception as notification_error:
                                     logger.error(f"❌ Ошибка при инициализации системы уведомлений: {notification_error}", exc_info=True)
                             else:
@@ -2684,14 +2727,13 @@ def main():
             
             # Инициализируем систему уведомлений о задачах
             if TASK_NOTIFICATIONS_AVAILABLE:
-                telegram_group_id = os.getenv("TELEGRAM_SUPERGROUP_ID")
-                if telegram_group_id:
+                group_id, thread_id = parse_telegram_group_id()
+                if group_id:
                     try:
-                        telegram_group_id_int = int(telegram_group_id)
                         notification_service = TaskNotificationService(
                             bitrix_client=bitrix_client,
                             telegram_bot=app.bot,
-                            telegram_group_id=telegram_group_id_int
+                            telegram_group_id=group_id
                         )
                         
                         # Запускаем периодическую проверку задач в фоне
@@ -2707,9 +2749,10 @@ def main():
                         
                         # Запускаем задачу в фоне
                         asyncio.create_task(periodic_task_check())
-                        logger.info(f"✅ Система уведомлений о задачах инициализирована для группы {telegram_group_id_int}")
-                    except (ValueError, TypeError) as group_id_error:
-                        logger.warning(f"⚠️ Неверный формат TELEGRAM_SUPERGROUP_ID: {telegram_group_id}. Уведомления отключены.")
+                        log_msg = f"✅ Система уведомлений о задачах инициализирована для группы {group_id}"
+                        if thread_id:
+                            log_msg += f" (thread_id: {thread_id})"
+                        logger.info(log_msg)
                     except Exception as notification_error:
                         logger.error(f"❌ Ошибка при инициализации системы уведомлений: {notification_error}", exc_info=True)
                 else:
