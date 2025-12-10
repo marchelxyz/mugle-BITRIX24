@@ -589,14 +589,20 @@ class TaskNotificationService:
             
             # Получаем информацию о задаче для получения создателя и исполнителя
             try:
+                logger.info(f"🔍 Запрос информации о задаче {task_id_int} через API клиент (домен: {api_client.domain})")
                 task_info = api_client.get_task_by_id(task_id_int)
                 if task_info:
+                    logger.info(f"📦 Полученная информация о задаче {task_id_int}:")
+                    logger.info(f"   Тип: {type(task_info)}")
+                    logger.info(f"   Ключи: {list(task_info.keys()) if isinstance(task_info, dict) else 'N/A'}")
+                    logger.info(f"   Полные данные: {task_info}")
+                    
                     task_title = task_info.get('title', 'Без названия')
                     responsible_id = task_info.get('responsibleId')
                     created_by_id = task_info.get('createdBy')
                     logger.info(f"✅ Получена информация о задаче {task_id_int}: создатель={created_by_id}, исполнитель={responsible_id}")
                 else:
-                    logger.warning(f"⚠️ Не удалось получить информацию о задаче {task_id_int}")
+                    logger.warning(f"⚠️ Не удалось получить информацию о задаче {task_id_int} (task_info = None)")
                     task_title = 'Без названия'
                     responsible_id = None
                     created_by_id = None
@@ -607,14 +613,20 @@ class TaskNotificationService:
                     if api_client != self.bitrix_client:
                         logger.warning(f"⚠️ Метод недоступен для клиента с доменом {api_client.domain}, пробуем основной клиент")
                         try:
+                            logger.info(f"🔍 Повторный запрос информации о задаче {task_id_int} через основной клиент (домен: {self.bitrix_client.domain})")
                             task_info = self.bitrix_client.get_task_by_id(task_id_int)
                             if task_info:
+                                logger.info(f"📦 Полученная информация о задаче {task_id_int} через основной клиент:")
+                                logger.info(f"   Тип: {type(task_info)}")
+                                logger.info(f"   Ключи: {list(task_info.keys()) if isinstance(task_info, dict) else 'N/A'}")
+                                logger.info(f"   Полные данные: {task_info}")
+                                
                                 task_title = task_info.get('title', 'Без названия')
                                 responsible_id = task_info.get('responsibleId')
                                 created_by_id = task_info.get('createdBy')
                                 logger.info(f"✅ Получена информация о задаче через основной клиент: создатель={created_by_id}, исполнитель={responsible_id}")
                             else:
-                                logger.warning(f"⚠️ Не удалось получить информацию о задаче {task_id_int} через основной клиент")
+                                logger.warning(f"⚠️ Не удалось получить информацию о задаче {task_id_int} через основной клиент (task_info = None)")
                                 task_title = 'Без названия'
                                 responsible_id = None
                                 created_by_id = None
