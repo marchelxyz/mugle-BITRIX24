@@ -2358,8 +2358,57 @@ def main():
                     - Новый формат: {"event": "ONUSERUPDATE", "data": {...}}
                     """
                     try:
-                        # Получаем данные от Bitrix24 (читаем один раз)
-                        data = await request.json()
+                        # Получаем данные от Bitrix24
+                        # Bitrix24 может отправлять данные в разных форматах:
+                        # - application/json
+                        # - application/x-www-form-urlencoded
+                        content_type = request.headers.get('Content-Type', '').lower()
+                        logger.debug(f"Content-Type запроса от Bitrix24: {content_type}")
+                        
+                        if 'application/json' in content_type:
+                            data = await request.json()
+                            logger.debug(f"Данные получены как JSON")
+                        elif 'application/x-www-form-urlencoded' in content_type or 'form-data' in content_type:
+                            # Парсим form-urlencoded данные
+                            form_data = await request.post()
+                            logger.debug(f"Данные получены как form-urlencoded: {dict(form_data)}")
+                            # Преобразуем в словарь
+                            data = {}
+                            for key, value in form_data.items():
+                                # Обрабатываем вложенные ключи типа data[FIELDS_AFTER][ID]
+                                keys = key.split('[')
+                                current = data
+                                for i, k in enumerate(keys):
+                                    k = k.rstrip(']')
+                                    if i == len(keys) - 1:
+                                        current[k] = value
+                                    else:
+                                        if k not in current:
+                                            current[k] = {}
+                                        current = current[k]
+                            logger.debug(f"Распарсенные данные: {data}")
+                        else:
+                            # Пробуем сначала JSON, потом form-data
+                            try:
+                                data = await request.json()
+                                logger.debug(f"Данные получены как JSON (fallback)")
+                            except Exception as json_err:
+                                logger.debug(f"Ошибка парсинга JSON: {json_err}, пробуем form-data")
+                                form_data = await request.post()
+                                logger.debug(f"Данные получены как form-data (fallback): {dict(form_data)}")
+                                data = {}
+                                for key, value in form_data.items():
+                                    keys = key.split('[')
+                                    current = data
+                                    for i, k in enumerate(keys):
+                                        k = k.rstrip(']')
+                                        if i == len(keys) - 1:
+                                            current[k] = value
+                                        else:
+                                            if k not in current:
+                                                current[k] = {}
+                                            current = current[k]
+                                logger.debug(f"Распарсенные данные (fallback): {data}")
                         
                         # Проверка токена исходящего вебхука (для безопасности)
                         outgoing_webhook_token = os.getenv("BITRIX24_OUTGOING_WEBHOOK_TOKEN")
