@@ -1843,7 +1843,8 @@ def main():
                                     notification_service = TaskNotificationService(
                                         bitrix_client=bitrix_client,
                                         telegram_bot=application.bot,
-                                        telegram_group_id=group_id
+                                        telegram_group_id=group_id,
+                                        telegram_thread_id=thread_id
                                     )
                                     
                                     # Сохраняем в глобальную переменную для доступа из обработчика вебхука
@@ -2918,7 +2919,8 @@ def main():
                         notification_service = TaskNotificationService(
                             bitrix_client=bitrix_client,
                             telegram_bot=app.bot,
-                            telegram_group_id=group_id
+                            telegram_group_id=group_id,
+                            telegram_thread_id=thread_id
                         )
                         
                         # Запускаем периодическую проверку задач в фоне

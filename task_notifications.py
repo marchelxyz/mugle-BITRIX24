@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 class TaskNotificationService:
     """Сервис для отслеживания задач и отправки уведомлений"""
     
-    def __init__(self, bitrix_client: Bitrix24Client, telegram_bot, telegram_group_id: int):
+    def __init__(self, bitrix_client: Bitrix24Client, telegram_bot, telegram_group_id: int, telegram_thread_id: Optional[int] = None):
         """
         Инициализация сервиса уведомлений
         
@@ -27,12 +27,17 @@ class TaskNotificationService:
             bitrix_client: Клиент для работы с Bitrix24 API
             telegram_bot: Экземпляр Telegram бота для отправки сообщений
             telegram_group_id: ID Telegram супергруппы для отправки уведомлений
+            telegram_thread_id: ID топика (thread) в группе для отправки уведомлений (опционально)
         """
         self.bitrix_client = bitrix_client
         self.telegram_bot = telegram_bot
         self.telegram_group_id = telegram_group_id
+        self.telegram_thread_id = telegram_thread_id
         
-        logger.info(f"✅ TaskNotificationService инициализирован для группы {telegram_group_id}")
+        if telegram_thread_id:
+            logger.info(f"✅ TaskNotificationService инициализирован для группы {telegram_group_id}, топик {telegram_thread_id}")
+        else:
+            logger.info(f"✅ TaskNotificationService инициализирован для группы {telegram_group_id}")
         
         # Настройки уведомлений из переменных окружения
         self.check_interval_minutes = int(os.getenv("TASK_NOTIFICATION_CHECK_INTERVAL", "60"))  # По умолчанию каждый час
@@ -82,7 +87,10 @@ class TaskNotificationService:
             user_telegram_id: Telegram ID пользователя для упоминания (опционально)
         """
         try:
-            logger.info(f"📨 Подготовка уведомления для группы {self.telegram_group_id}")
+            if self.telegram_thread_id:
+                logger.info(f"📨 Подготовка уведомления для группы {self.telegram_group_id}, топик {self.telegram_thread_id}")
+            else:
+                logger.info(f"📨 Подготовка уведомления для группы {self.telegram_group_id}")
             logger.debug(f"Сообщение: {message}")
             logger.debug(f"Telegram ID пользователя для упоминания: {user_telegram_id}")
             
@@ -110,21 +118,38 @@ class TaskNotificationService:
                 full_message = message
             
             logger.info(f"📤 Отправка сообщения в группу {self.telegram_group_id}...")
+            if self.telegram_thread_id:
+                logger.info(f"   Топик (thread_id): {self.telegram_thread_id}")
             logger.debug(f"Текст сообщения: {full_message}")
             
-            result = await self.telegram_bot.send_message(
-                chat_id=self.telegram_group_id,
-                text=full_message,
-                parse_mode='HTML',
-                disable_web_page_preview=False
-            )
+            # Формируем параметры для отправки сообщения
+            send_params = {
+                'chat_id': self.telegram_group_id,
+                'text': full_message,
+                'parse_mode': 'HTML',
+                'disable_web_page_preview': False
+            }
             
-            logger.info(f"✅ Уведомление успешно отправлено в группу {self.telegram_group_id} (message_id: {result.message_id})")
+            # Если указан thread_id, добавляем его для отправки в топик форума
+            if self.telegram_thread_id:
+                send_params['message_thread_id'] = self.telegram_thread_id
+            
+            result = await self.telegram_bot.send_message(**send_params)
+            
+            if self.telegram_thread_id:
+                logger.info(f"✅ Уведомление успешно отправлено в группу {self.telegram_group_id}, топик {self.telegram_thread_id} (message_id: {result.message_id})")
+            else:
+                logger.info(f"✅ Уведомление успешно отправлено в группу {self.telegram_group_id} (message_id: {result.message_id})")
         except Exception as e:
-            logger.error(f"❌ Ошибка при отправке уведомления в группу {self.telegram_group_id}: {e}", exc_info=True)
+            if self.telegram_thread_id:
+                logger.error(f"❌ Ошибка при отправке уведомления в группу {self.telegram_group_id}, топик {self.telegram_thread_id}: {e}", exc_info=True)
+            else:
+                logger.error(f"❌ Ошибка при отправке уведомления в группу {self.telegram_group_id}: {e}", exc_info=True)
             logger.error(f"   Тип ошибки: {type(e).__name__}")
             logger.error(f"   Сообщение: {message}")
             logger.error(f"   Telegram ID пользователя: {user_telegram_id}")
+            if self.telegram_thread_id:
+                logger.error(f"   Thread ID (топик): {self.telegram_thread_id}")
             # Пробуем получить информацию о группе для диагностики
             try:
                 chat_info = await self.telegram_bot.get_chat(chat_id=self.telegram_group_id)
