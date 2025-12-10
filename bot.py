@@ -2704,6 +2704,9 @@ def main():
                 aio_app.router.add_get('/', health_check)
                 aio_app.router.add_get('/health', health_check)
                 aio_app.router.add_post(f'/{token}', webhook_handler)
+                # Обработчик POST на корневой путь для вебхуков Bitrix24
+                # Bitrix24 может отправлять вебхуки на корневой путь "/"
+                aio_app.router.add_post('/', bitrix_outgoing_webhook_handler)
                 aio_app.router.add_get('/miniapp', miniapp_handler)
                 aio_app.router.add_get('/api/miniapp/session', miniapp_session_handler)
                 aio_app.router.add_post('/api/miniapp/session', miniapp_session_handler)  # Поддержка POST для initData
@@ -2712,8 +2715,9 @@ def main():
                 aio_app.router.add_post('/api/miniapp/create-task', miniapp_create_task_handler)
                 # Исходящий вебхук от Bitrix24 для синхронизации Telegram ID
                 # Поддерживаем несколько вариантов URL:
-                # 1. /api/bitrix/webhook (токен в заголовке, query параметре или теле запроса)
-                # 2. /api/bitrix/webhook/{token} (токен в пути URL)
+                # 1. / (корневой путь) - для вебхуков Bitrix24, отправляемых на корневой URL
+                # 2. /api/bitrix/webhook (токен в заголовке, query параметре или теле запроса)
+                # 3. /api/bitrix/webhook/{token} (токен в пути URL)
                 aio_app.router.add_post('/api/bitrix/webhook', bitrix_outgoing_webhook_handler)
                 aio_app.router.add_post('/api/bitrix/webhook/{token}', bitrix_outgoing_webhook_handler)
                 
