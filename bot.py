@@ -1549,13 +1549,20 @@ def main():
     # Проверка упоминания бота выполняется внутри функции
     application.add_handler(
         MessageHandler(
-            filters.REPLY & (filters.TEXT | filters.Caption),
+            filters.REPLY & (filters.TEXT | filters.CAPTION),
             handle_reply_with_mention
         )
     )
     
     # ConversationHandler для стандартного диалога создания задачи
     application.add_handler(task_creation_handler)
+    
+    # Обработчик ошибок
+    async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Обработчик ошибок"""
+        logger.error(f"Exception while handling an update: {context.error}", exc_info=context.error)
+    
+    application.add_error_handler(error_handler)
     
     # Проверяем, используется ли webhook (для Railway/продакшена)
     port = int(os.getenv("PORT", 0))
