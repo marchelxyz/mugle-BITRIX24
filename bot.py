@@ -2011,8 +2011,8 @@ def main():
                             if description:
                                 response_text += f"📝 Описание: {description[:100]}...\n" if len(description) > 100 else f"📝 Описание: {description}\n"
                             
-                            if file_ids:
-                                response_text += f"📎 Прикреплено файлов: {len(file_ids)}\n"
+                            if files:
+                                response_text += f"📎 Прикреплено файлов: {len(files)}\n"
                             
                             response_text += f"🆔 ID задачи: {task_id}\n\n"
                             response_text += f"🔗 Ссылка на задачу: {task_url}"
