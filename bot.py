@@ -2439,35 +2439,102 @@ def main():
                             logger.debug(f"🔑 BITRIX24_OUTGOING_WEBHOOK_TOKEN установлен (первые 10 символов): {outgoing_webhook_token[:10]}...")
                         
                         if outgoing_webhook_token:
-                            # Bitrix24 может отправлять токен в заголовке, параметрах запроса или в теле
-                            # Проверяем заголовок X-Bitrix-Token или параметр token
+                            # Bitrix24 может отправлять токен в разных местах:
+                            # 1. В заголовке X-Bitrix-Token или Authorization
+                            # 2. В параметре URL token (или других именах: secret, auth_token, webhook_token)
+                            # 3. В теле запроса (data.token, data.auth.token, или как отдельное поле)
+                            # 4. В URL как часть пути (например, /api/bitrix/webhook/TOKEN)
+                            
+                            # Проверяем заголовок X-Bitrix-Token или Authorization
                             token_from_header = request.headers.get('X-Bitrix-Token') or request.headers.get('Authorization', '').replace('Bearer ', '')
-                            token_from_query = request.query.get('token')
+                            
+                            # Проверяем параметры URL (пробуем разные возможные имена)
+                            token_from_query = (
+                                request.query.get('token') or
+                                request.query.get('secret') or
+                                request.query.get('auth_token') or
+                                request.query.get('webhook_token') or
+                                request.query.get('authToken') or
+                                request.query.get('webhookToken')
+                            )
+                            
+                            # Проверяем токен в URL как часть пути (из match_info для маршрута с {token})
+                            token_from_path = None
+                            # Если токен передан в пути через маршрут /api/bitrix/webhook/{token}
+                            if 'token' in request.match_info:
+                                token_from_path = request.match_info['token']
+                            else:
+                                # Проверяем путь вручную
+                                path_parts = request.path.strip('/').split('/')
+                                # Если путь заканчивается токеном (например, /api/bitrix/webhook/TOKEN)
+                                if len(path_parts) > 0 and path_parts[-1] and path_parts[-1] != 'webhook':
+                                    potential_token = path_parts[-1]
+                                    # Проверяем, что это похоже на токен (длина > 20 символов)
+                                    if len(potential_token) > 20:
+                                        token_from_path = potential_token
+                            
                             # Пробуем получить токен из тела запроса
                             token_from_body = None
                             if isinstance(data, dict):
-                                token_from_body = data.get('token') or data.get('auth', {}).get('token') if isinstance(data.get('auth'), dict) else None
+                                # Проверяем различные варианты расположения токена в теле
+                                token_from_body = (
+                                    data.get('token') or 
+                                    data.get('auth', {}).get('token') if isinstance(data.get('auth'), dict) else None or
+                                    data.get('webhook_token') or
+                                    data.get('secret') or
+                                    data.get('auth_token')
+                                )
+                            
+                            # Также проверяем распарсенные form-data напрямую
+                            token_from_form_data = None
+                            if 'application/x-www-form-urlencoded' in content_type:
+                                try:
+                                    from urllib.parse import parse_qs
+                                    parsed = parse_qs(body_text, keep_blank_values=True)
+                                    form_data_dict = {k: v[0] if len(v) == 1 else v for k, v in parsed.items()}
+                                    token_from_form_data = (
+                                        form_data_dict.get('token') or
+                                        form_data_dict.get('webhook_token') or
+                                        form_data_dict.get('secret') or
+                                        form_data_dict.get('auth_token')
+                                    )
+                                except:
+                                    pass
                             
                             # Дополнительная диагностика: проверяем все возможные заголовки с токеном
                             all_headers_with_token = {k: v for k, v in request.headers.items() if 'token' in k.lower() or 'auth' in k.lower()}
                             if all_headers_with_token:
                                 logger.debug(f"🔍 Заголовки с 'token' или 'auth': {all_headers_with_token}")
                             
-                            received_token = token_from_header or token_from_query or token_from_body
+                            # Объединяем все возможные источники токена
+                            received_token = token_from_header or token_from_query or token_from_path or token_from_body or token_from_form_data
                             
                             # Подробное логирование для диагностики
-                            logger.debug(f"🔍 Поиск токена:")
-                            logger.debug(f"   - Из заголовка X-Bitrix-Token: {token_from_header[:10] if token_from_header else 'None'}...")
-                            logger.debug(f"   - Из заголовка Authorization: {request.headers.get('Authorization', 'None')[:20] if request.headers.get('Authorization') else 'None'}...")
-                            logger.debug(f"   - Из параметра URL token: {token_from_query[:10] if token_from_query else 'None'}...")
-                            logger.debug(f"   - Из тела запроса data.token: {token_from_body[:10] if token_from_body else 'None'}...")
-                            logger.debug(f"   - Найденный токен: {received_token[:10] if received_token else 'None'}...")
+                            logger.warning(f"🔍 Поиск токена:")
+                            logger.warning(f"   - Из заголовка X-Bitrix-Token: {token_from_header[:10] if token_from_header else 'None'}...")
+                            logger.warning(f"   - Из заголовка Authorization: {request.headers.get('Authorization', 'None')[:20] if request.headers.get('Authorization') else 'None'}...")
+                            logger.warning(f"   - Из параметра URL token: {token_from_query[:10] if token_from_query else 'None'}...")
+                            logger.warning(f"   - Из пути URL: {token_from_path[:10] if token_from_path else 'None'}...")
+                            logger.warning(f"   - Из тела запроса data.token: {token_from_body[:10] if token_from_body else 'None'}...")
+                            logger.warning(f"   - Из form-data напрямую: {token_from_form_data[:10] if token_from_form_data else 'None'}...")
+                            logger.warning(f"   - Найденный токен: {received_token[:10] if received_token else 'None'}...")
+                            logger.warning(f"   - Все query параметры: {dict(request.query)}")
+                            logger.warning(f"   - Путь запроса: {request.path}")
+                            logger.warning(f"   - Match info: {dict(request.match_info)}")
+                            logger.warning(f"   - Тело запроса (первые 300 символов): {body_text[:300]}")
+                            if isinstance(data, dict):
+                                logger.warning(f"   - Ключи в распарсенных данных: {list(data.keys())[:20]}")
+                                logger.warning(f"   - Распарсенные данные (первые 500 символов): {str(data)[:500]}")
+                            else:
+                                logger.warning(f"   - Тип распарсенных данных: {type(data)}")
+                                logger.warning(f"   - Распарсенные данные: {str(data)[:500]}")
                             
                             if not received_token or received_token != outgoing_webhook_token:
                                 logger.warning(f"⚠️ Неверный токен исходящего вебхука. Получен: {received_token[:10] if received_token else 'None'}...")
                                 logger.warning(f"⚠️ Ожидаемый токен (первые 10 символов): {outgoing_webhook_token[:10]}...")
                                 logger.warning(f"⚠️ Все заголовки запроса: {dict(request.headers)}")
                                 logger.warning(f"⚠️ Параметры URL: {dict(request.query)}")
+                                logger.warning(f"⚠️ Путь запроса: {request.path}")
                                 return web.json_response({'status': 'error', 'message': 'Invalid token'}, status=403)
                             
                             logger.debug("✅ Токен исходящего вебхука проверен успешно")
@@ -2644,7 +2711,11 @@ def main():
                 aio_app.router.add_get('/api/miniapp/departments', miniapp_departments_handler)
                 aio_app.router.add_post('/api/miniapp/create-task', miniapp_create_task_handler)
                 # Исходящий вебхук от Bitrix24 для синхронизации Telegram ID
+                # Поддерживаем несколько вариантов URL:
+                # 1. /api/bitrix/webhook (токен в заголовке, query параметре или теле запроса)
+                # 2. /api/bitrix/webhook/{token} (токен в пути URL)
                 aio_app.router.add_post('/api/bitrix/webhook', bitrix_outgoing_webhook_handler)
+                aio_app.router.add_post('/api/bitrix/webhook/{token}', bitrix_outgoing_webhook_handler)
                 
                 # Инициализируем приложение
                 # Используем on_startup для инициализации Telegram в фоне
