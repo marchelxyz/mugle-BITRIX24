@@ -492,6 +492,33 @@
         .file-item-remove:active {
             opacity: 0.8;
         }
+        
+        .deadline-shortcuts {
+            margin-top: 8px;
+        }
+        
+        .deadline-btn {
+            padding: 6px 12px;
+            background: var(--tg-theme-secondary-bg-color, #f0f0f0);
+            color: var(--tg-theme-text-color, #000000);
+            border: 1px solid var(--tg-theme-hint-color, #e0e0e0);
+            border-radius: 6px;
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-weight: 500;
+        }
+        
+        .deadline-btn:hover {
+            background: var(--tg-theme-button-color, #3390ec);
+            color: var(--tg-theme-button-text-color, #ffffff);
+            border-color: var(--tg-theme-button-color, #3390ec);
+        }
+        
+        .deadline-btn:active {
+            opacity: 0.8;
+            transform: scale(0.98);
+        }
     </style>
 </head>
 <body>
@@ -542,6 +569,13 @@
             <div class="form-group">
                 <label>Срок выполнения</label>
                 <input type="datetime-local" id="deadline">
+                <div class="deadline-shortcuts" style="margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px;">
+                    <button type="button" class="deadline-btn" onclick="setDeadlineShortcut(1)">Через 1 день</button>
+                    <button type="button" class="deadline-btn" onclick="setDeadlineShortcut(3)">Через 3 дня</button>
+                    <button type="button" class="deadline-btn" onclick="setDeadlineShortcut(7)">Через 7 дней</button>
+                    <button type="button" class="deadline-btn" onclick="setDeadlineShortcut(15)">Через 15 дней</button>
+                    <button type="button" class="deadline-btn" onclick="setDeadlineShortcut(30)">Через месяц</button>
+                </div>
             </div>
             
             <div class="form-group">
@@ -1087,6 +1121,40 @@
             const sizes = ['Bytes', 'KB', 'MB', 'GB'];
             const i = Math.floor(Math.log(bytes) / Math.log(k));
             return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+        }
+        
+        // Установка дедлайна через заготовку (количество дней)
+        function setDeadlineShortcut(days) {
+            const now = new Date();
+            // Добавляем дни
+            const deadlineDate = new Date(now);
+            deadlineDate.setDate(now.getDate() + days);
+            
+            // Устанавливаем время на 18:00 (конец рабочего дня)
+            deadlineDate.setHours(18, 0, 0, 0);
+            
+            // Форматируем для input[type="datetime-local"]
+            // Формат: YYYY-MM-DDTHH:mm
+            const year = deadlineDate.getFullYear();
+            const month = String(deadlineDate.getMonth() + 1).padStart(2, '0');
+            const day = String(deadlineDate.getDate()).padStart(2, '0');
+            const hours = String(deadlineDate.getHours()).padStart(2, '0');
+            const minutes = String(deadlineDate.getMinutes()).padStart(2, '0');
+            
+            const formattedDate = `${year}-${month}-${day}T${hours}:${minutes}`;
+            
+            // Устанавливаем значение в поле
+            document.getElementById('deadline').value = formattedDate;
+            
+            // Показываем уведомление
+            const dayLabels = {
+                1: '1 день',
+                3: '3 дня',
+                7: '7 дней',
+                15: '15 дней',
+                30: 'месяц'
+            };
+            tg.showAlert(`✅ Срок установлен: через ${dayLabels[days] || days + ' дней'} (${day}.${month}.${year} в ${hours}:${minutes})`);
         }
         
         // Обработка отправки формы

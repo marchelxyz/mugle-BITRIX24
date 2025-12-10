@@ -8,7 +8,7 @@ import logging
 import threading
 import asyncio
 import secrets
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Optional, List
 from urllib.parse import urlencode
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -244,7 +244,10 @@ def parse_responsibles(responsibles_text: str) -> List[str]:
 
 def parse_deadline(deadline_text: str) -> Optional[str]:
     """
-    Парсинг даты в формате дд.мм.гг чч:мм
+    Парсинг даты в различных форматах:
+    - дд.мм.гг чч:мм (например, "25.12.24 18:00")
+    - через N дней (например, "через 1 день", "через 3 дня", "через 7 дней")
+    - через месяц (например, "через месяц")
     
     Args:
         deadline_text: Текст с датой
@@ -253,28 +256,65 @@ def parse_deadline(deadline_text: str) -> Optional[str]:
         Дата в формате YYYY-MM-DD HH:MI:SS или None
     """
     try:
-        # Паттерн для дд.мм.гг чч:мм
+        deadline_text = deadline_text.strip().lower()
+        now = datetime.now()
+        
+        # Паттерн 1: "через N дней" или "через месяц"
+        if deadline_text.startswith('через'):
+            # Убираем "через" и пробелы
+            rest = deadline_text.replace('через', '').strip()
+            
+            days = None
+            
+            # Проверяем на "месяц"
+            if 'месяц' in rest or 'мес' in rest:
+                days = 30
+            # Проверяем на "неделю" или "недели"
+            elif 'недел' in rest:
+                # Ищем число недель
+                weeks_match = re.search(r'(\d+)', rest)
+                if weeks_match:
+                    weeks = int(weeks_match.group(1))
+                    days = weeks * 7
+                else:
+                    # Если число не указано, считаем 1 неделю
+                    days = 7
+            else:
+                # Ищем число дней
+                days_match = re.search(r'(\d+)', rest)
+                if days_match:
+                    days = int(days_match.group(1))
+            
+            if days is not None:
+                deadline_date = now + timedelta(days=days)
+                # Устанавливаем время на 18:00 (конец рабочего дня)
+                deadline_date = deadline_date.replace(hour=18, minute=0, second=0, microsecond=0)
+                # Форматируем дату
+                date_str = deadline_date.strftime("%Y-%m-%d %H:%M:%S")
+                return date_str
+        
+        # Паттерн 2: дд.мм.гг чч:мм (старый формат)
         pattern = r'(\d{2})\.(\d{2})\.(\d{2,4})\s+(\d{2}):(\d{2})'
-        match = re.match(pattern, deadline_text.strip())
+        match = re.match(pattern, deadline_text)
         
-        if not match:
-            return None
+        if match:
+            day, month, year, hour, minute = match.groups()
+            
+            # Обработка года (если 2 цифры, добавляем 20)
+            if len(year) == 2:
+                year = f"20{year}"
+            
+            # Формируем дату
+            date_str = f"{year}-{month}-{day} {hour}:{minute}:00"
+            
+            # Проверяем валидность даты
+            datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S")
+            
+            return date_str
         
-        day, month, year, hour, minute = match.groups()
-        
-        # Обработка года (если 2 цифры, добавляем 20)
-        if len(year) == 2:
-            year = f"20{year}"
-        
-        # Формируем дату
-        date_str = f"{year}-{month}-{day} {hour}:{minute}:00"
-        
-        # Проверяем валидность даты
-        datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S")
-        
-        return date_str
+        return None
     except Exception as e:
-        logger.error(f"Ошибка парсинга даты: {e}")
+        logger.error(f"Ошибка парсинга даты '{deadline_text}': {e}")
         return None
 
 
@@ -921,8 +961,16 @@ async def handle_responsibles(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     # Задаем следующий вопрос
     await update.message.reply_text(
-        "2️⃣ Какой срок? (формат: дд.мм.гг чч:мм)\n\n"
-        "Пример: 25.12.24 15:30"
+        "2️⃣ Какой срок?\n\n"
+        "📅 Доступные форматы:\n"
+        "• дд.мм.гг чч:мм (например: 25.12.24 15:30)\n"
+        "• через 1 день\n"
+        "• через 3 дня\n"
+        "• через 7 дней\n"
+        "• через 15 дней\n"
+        "• через месяц\n"
+        "• через неделю\n\n"
+        "Примеры: \"через 1 день\", \"через 3 дня\", \"25.12.24 18:00\""
     )
     
     return WAITING_FOR_DEADLINE
@@ -940,9 +988,16 @@ async def handle_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not deadline:
         await update.message.reply_text(
-            "❌ Неверный формат даты.\n"
-            "Используйте формат: дд.мм.гг чч:мм\n\n"
-            "Пример: 25.12.24 15:30"
+            "❌ Неверный формат даты.\n\n"
+            "📅 Доступные форматы:\n"
+            "• дд.мм.гг чч:мм (например: 25.12.24 15:30)\n"
+            "• через 1 день\n"
+            "• через 3 дня\n"
+            "• через 7 дней\n"
+            "• через 15 дней\n"
+            "• через месяц\n"
+            "• через неделю\n\n"
+            "Примеры: \"через 1 день\", \"через 3 дня\", \"25.12.24 18:00\""
         )
         return WAITING_FOR_DEADLINE
     
