@@ -78,13 +78,35 @@ class TaskNotificationService:
         else:
             self.sent_notifications.add(notification_key)
     
-    async def _send_notification(self, message: str, user_telegram_id: Optional[int] = None):
+    async def _get_telegram_username(self, telegram_id: int) -> Optional[str]:
+        """
+        Получение Telegram username пользователя из чата
+        
+        Args:
+            telegram_id: Telegram ID пользователя
+            
+        Returns:
+            Username пользователя или None
+        """
+        try:
+            chat_member = await self.telegram_bot.get_chat_member(
+                chat_id=self.telegram_group_id,
+                user_id=telegram_id
+            )
+            username = chat_member.user.username
+            if username:
+                return username
+        except Exception as e:
+            logger.debug(f"Не удалось получить username для пользователя {telegram_id}: {e}")
+        return None
+    
+    async def _send_notification(self, message: str, user_telegram_ids: Optional[List[int]] = None):
         """
         Отправка уведомления в Telegram супергруппу
         
         Args:
             message: Текст сообщения
-            user_telegram_id: Telegram ID пользователя для упоминания (опционально)
+            user_telegram_ids: Список Telegram ID пользователей для упоминания через @username (опционально)
         """
         try:
             if self.telegram_thread_id:
@@ -92,28 +114,32 @@ class TaskNotificationService:
             else:
                 logger.info(f"📨 Подготовка уведомления для группы {self.telegram_group_id}")
             logger.debug(f"Сообщение: {message}")
-            logger.debug(f"Telegram ID пользователя для упоминания: {user_telegram_id}")
+            logger.debug(f"Telegram ID пользователей для упоминания: {user_telegram_ids}")
             
-            # Формируем текст с упоминанием пользователя, если указан
-            # В Telegram супергруппах упоминание делается через user_id
-            if user_telegram_id:
-                # Пробуем получить информацию о пользователе из чата для упоминания
-                try:
-                    # Получаем информацию о пользователе из чата
-                    logger.debug(f"Получение информации о пользователе {user_telegram_id} из группы {self.telegram_group_id}...")
-                    chat_member = await self.telegram_bot.get_chat_member(
-                        chat_id=self.telegram_group_id,
-                        user_id=user_telegram_id
-                    )
-                    user_name = chat_member.user.first_name or chat_member.user.username or f"Пользователь {user_telegram_id}"
-                    # Используем HTML формат для упоминания: <a href="tg://user?id=USER_ID">имя</a>
-                    full_message = f"<a href='tg://user?id={user_telegram_id}'>{user_name}</a>, {message}"
-                    logger.debug(f"Сформировано сообщение с упоминанием пользователя: {user_name}")
-                except Exception as member_error:
-                    # Если не удалось получить информацию о пользователе, используем простой формат
-                    logger.debug(f"Не удалось получить информацию о пользователе {user_telegram_id}: {member_error}")
-                    # Используем формат с user_id для упоминания
-                    full_message = f"<a href='tg://user?id={user_telegram_id}'>Пользователь</a>, {message}"
+            # Формируем текст с упоминанием пользователей через @username
+            if user_telegram_ids:
+                mentions = []
+                for telegram_id in user_telegram_ids:
+                    username = await self._get_telegram_username(telegram_id)
+                    if username:
+                        mentions.append(f"@{username}")
+                    else:
+                        # Если username нет, используем формат с user_id
+                        try:
+                            chat_member = await self.telegram_bot.get_chat_member(
+                                chat_id=self.telegram_group_id,
+                                user_id=telegram_id
+                            )
+                            user_name = chat_member.user.first_name or f"Пользователь {telegram_id}"
+                            mentions.append(f"<a href='tg://user?id={telegram_id}'>{user_name}</a>")
+                        except Exception:
+                            mentions.append(f"<a href='tg://user?id={telegram_id}'>Пользователь</a>")
+                
+                if mentions:
+                    mentions_str = ", ".join(mentions)
+                    full_message = f"{mentions_str}, {message}"
+                else:
+                    full_message = message
             else:
                 full_message = message
             
@@ -190,20 +216,49 @@ class TaskNotificationService:
                 if self._was_notification_sent(notification_key):
                     continue
                 
-                # Получаем Telegram ID ответственного
-                telegram_id = None
+                # Получаем полную информацию о задаче для получения создателя
+                try:
+                    task_info = self.bitrix_client.get_task_by_id(int(task_id))
+                    created_by_id = task_info.get('createdBy') if task_info else None
+                except Exception as e:
+                    logger.debug(f"Не удалось получить полную информацию о задаче {task_id}: {e}")
+                    created_by_id = None
+                
+                # Получаем Telegram ID ответственного и создателя
+                telegram_ids = []
+                responsible_telegram_id = None
+                created_by_telegram_id = None
+                
+                # Сначала получаем создателя (если он есть и отличается от ответственного)
+                if created_by_id and str(created_by_id) != str(responsible_id):
+                    try:
+                        created_by_telegram_id = self.bitrix_client.get_user_telegram_id(int(created_by_id))
+                        if created_by_telegram_id:
+                            telegram_ids.append(created_by_telegram_id)
+                    except Exception as e:
+                        logger.debug(f"Не удалось получить Telegram ID для создателя {created_by_id}: {e}")
+                
+                # Затем получаем ответственного
                 if responsible_id:
-                    telegram_id = self.bitrix_client.get_user_telegram_id(int(responsible_id))
+                    try:
+                        responsible_telegram_id = self.bitrix_client.get_user_telegram_id(int(responsible_id))
+                        if responsible_telegram_id and responsible_telegram_id not in telegram_ids:
+                            telegram_ids.append(responsible_telegram_id)
+                    except Exception as e:
+                        logger.debug(f"Не удалось получить Telegram ID для ответственного {responsible_id}: {e}")
                 
                 # Формируем ссылку на задачу
                 task_url = self.bitrix_client.get_task_url(int(task_id), responsible_id)
                 
                 # Формируем сообщение
-                task_title = task.get("title", "Без названия")
-                message = f"срок выполнения задачи <a href='{task_url}'>«{task_title}»</a> просрочен"
+                # Если есть и создатель, и ответственный (и они разные), упоминаем обоих
+                if created_by_telegram_id and responsible_telegram_id and created_by_telegram_id != responsible_telegram_id:
+                    message = f"исполнитель просрочил задачу <a href='{task_url}'>«{task.get('title', 'Без названия')}»</a>"
+                else:
+                    message = f"вы просрочили задачу <a href='{task_url}'>«{task.get('title', 'Без названия')}»</a>"
                 
                 # Отправляем уведомление
-                await self._send_notification(message, telegram_id)
+                await self._send_notification(message, telegram_ids if telegram_ids else None)
                 self._mark_notification_sent(notification_key, int(task_id), "overdue")
                 
                 logger.info(f"✅ Отправлено уведомление о просроченной задаче {task_id}")
@@ -247,9 +302,11 @@ class TaskNotificationService:
                     continue
                 
                 # Получаем Telegram ID ответственного
-                telegram_id = None
+                telegram_ids = []
                 if responsible_id:
                     telegram_id = self.bitrix_client.get_user_telegram_id(int(responsible_id))
+                    if telegram_id:
+                        telegram_ids.append(telegram_id)
                 
                 # Формируем ссылку на задачу
                 task_url = self.bitrix_client.get_task_url(int(task_id), responsible_id)
@@ -277,10 +334,10 @@ class TaskNotificationService:
                     logger.warning(f"Ошибка при парсинге даты дедлайна {deadline_str}: {date_error}")
                     hours_left = self.deadline_warning_hours  # Используем значение по умолчанию
                 
-                message = f"срок выполнения задачи <a href='{task_url}'>«{task_title}»</a> истекает через {hours_left} часов"
+                message = f"вы почти просрочили задачу <a href='{task_url}'>«{task_title}»</a>"
                 
                 # Отправляем уведомление
-                await self._send_notification(message, telegram_id)
+                await self._send_notification(message, telegram_ids if telegram_ids else None)
                 self._mark_notification_sent(notification_key, int(task_id), "deadline_warning")
                 
                 logger.info(f"✅ Отправлено предупреждение о дедлайне задачи {task_id}")
@@ -342,10 +399,12 @@ class TaskNotificationService:
             deadline = task_data.get('DEADLINE') or task_data.get('deadline')
             
             # Получаем Telegram ID ответственного
-            telegram_id = None
+            telegram_ids = []
             if responsible_id:
                 try:
                     telegram_id = self.bitrix_client.get_user_telegram_id(int(responsible_id))
+                    if telegram_id:
+                        telegram_ids.append(telegram_id)
                 except Exception as e:
                     logger.debug(f"Не удалось получить Telegram ID для пользователя {responsible_id}: {e}")
             
@@ -378,7 +437,7 @@ class TaskNotificationService:
                 return
             
             # Отправляем уведомление в группу
-            await self._send_notification(message, telegram_id)
+            await self._send_notification(message, telegram_ids if telegram_ids else None)
             
             # Отмечаем уведомление как отправленное
             self._mark_notification_sent(notification_key, task_id_int, notification_type, event_upper)
@@ -423,24 +482,28 @@ class TaskNotificationService:
             # Формируем ссылку на задачу
             task_url = self.bitrix_client.get_task_url(task_id_int, int(responsible_id) if responsible_id else None)
             
-            # Получаем автора комментария
+            # Получаем автора комментария и ответственного за задачу для упоминания
             author_id = comment_data.get('AUTHOR_ID') or comment_data.get('authorId') or comment_data.get('AUTHOR_ID')
-            telegram_id = None
-            if author_id:
+            telegram_ids = []
+            
+            # Добавляем ответственного за задачу (если он есть)
+            if responsible_id:
                 try:
-                    telegram_id = self.bitrix_client.get_user_telegram_id(int(author_id))
+                    responsible_telegram_id = self.bitrix_client.get_user_telegram_id(int(responsible_id))
+                    if responsible_telegram_id:
+                        telegram_ids.append(responsible_telegram_id)
                 except Exception as e:
-                    logger.debug(f"Не удалось получить Telegram ID для автора комментария {author_id}: {e}")
+                    logger.debug(f"Не удалось получить Telegram ID для ответственного {responsible_id}: {e}")
             
             # Формируем сообщение в зависимости от типа события
             if 'ONTASKCOMMENTADD' in event_upper:
-                message = f"добавлен комментарий к задаче <a href='{task_url}'>«{task_title}»</a>"
+                message = f"в задаче <a href='{task_url}'>«{task_title}»</a> новый комментарий"
                 notification_type = "comment_added"
             elif 'ONTASKCOMMENTUPDATE' in event_upper:
-                message = f"обновлен комментарий к задаче <a href='{task_url}'>«{task_title}»</a>"
+                message = f"в задаче <a href='{task_url}'>«{task_title}»</a> обновлен комментарий"
                 notification_type = "comment_updated"
             elif 'ONTASKCOMMENTDELETE' in event_upper:
-                message = f"удален комментарий к задаче <a href='{task_url}'>«{task_title}»</a>"
+                message = f"в задаче <a href='{task_url}'>«{task_title}»</a> удален комментарий"
                 notification_type = "comment_deleted"
             else:
                 logger.debug(f"Неизвестный тип события комментария: {event}")
@@ -452,8 +515,8 @@ class TaskNotificationService:
                 logger.debug(f"Уведомление для события {event} комментария {comment_id} уже отправлено")
                 return
             
-            # Отправляем уведомление в группу
-            await self._send_notification(message, telegram_id)
+            # Отправляем уведомление в группу с упоминанием ответственного
+            await self._send_notification(message, telegram_ids if telegram_ids else None)
             
             # Отмечаем уведомление как отправленное
             self._mark_notification_sent(notification_key, task_id_int, notification_type, str(comment_id))
