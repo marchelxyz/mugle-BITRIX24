@@ -337,8 +337,6 @@ class Bitrix24Client:
                     log_line = f"ID: {user_id}"
                     if full_name:
                         log_line += f" | Имя: {full_name}"
-                    if email:
-                        log_line += f" | Email: {email}"
                     if login:
                         log_line += f" | Login: {login}"
                     if telegram_id:
@@ -366,8 +364,6 @@ class Bitrix24Client:
                 log_line = f"ID: {user_id}"
                 if full_name:
                     log_line += f" | Имя: {full_name}"
-                if email:
-                    log_line += f" | Email: {email}"
                 if login:
                     log_line += f" | Login: {login}"
                 if telegram_id:
@@ -422,8 +418,6 @@ class Bitrix24Client:
                         log_line = f"ID: {user_id}"
                         if full_name:
                             log_line += f" | Имя: {full_name}"
-                        if email:
-                            log_line += f" | Email: {email}"
                         if login:
                             log_line += f" | Login: {login}"
                         if telegram_id:
@@ -450,8 +444,6 @@ class Bitrix24Client:
                     log_line = f"ID: {user_id}"
                     if full_name:
                         log_line += f" | Имя: {full_name}"
-                    if email:
-                        log_line += f" | Email: {email}"
                     if login:
                         log_line += f" | Login: {login}"
                     if telegram_id:
