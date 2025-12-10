@@ -375,13 +375,20 @@ class TaskNotificationService:
         logger.info("   События комментариев: ONTASKCOMMENTADD, ONTASKCOMMENTUPDATE, ONTASKCOMMENTDELETE")
         return
     
-    async def handle_task_event(self, event: str, task_data: Dict):
+    async def handle_task_event(self, event: str, task_data: Dict, auth_data: Dict = None):
         """
         Обработка события задачи из вебхука Bitrix24
+        
+        Логика:
+        1. Исходящий токен (application_token) отправляет запрос на сервер
+        2. Сервер запрашивает у входящего токена (BITRIX24_WEBHOOK_TOKEN) информацию о задаче
+        3. После получения информации сервер сверяет с БД и отправляет уведомление
+           ТОЛЬКО ЕСЛИ пользователь зарегистрирован через LINK
         
         Args:
             event: Тип события (ONTASKADD, ONTASKUPDATE, ONTASKDELETE)
             task_data: Данные задачи из вебхука
+            auth_data: Данные авторизации из вебхука (опционально)
         """
         try:
             task_id = task_data.get('ID') or task_data.get('id')
@@ -392,31 +399,82 @@ class TaskNotificationService:
             task_id_int = int(task_id)
             event_upper = event.upper()
             
-            # Получаем информацию о задаче
-            task_title = task_data.get('TITLE') or task_data.get('title') or 'Без названия'
-            responsible_id = task_data.get('RESPONSIBLE_ID') or task_data.get('responsibleId') or task_data.get('RESPONSIBLE_ID')
-            status = task_data.get('STATUS') or task_data.get('status')
-            deadline = task_data.get('DEADLINE') or task_data.get('deadline')
+            # НЕ отправляем уведомления о созданных задачах (они уже отправляются при создании)
+            if 'ONTASKADD' in event_upper:
+                logger.debug(f"Пропускаем уведомление о создании задачи {task_id_int} (уже отправляется при создании)")
+                return
             
-            # Получаем Telegram ID ответственного
+            # Для ONTASKUPDATE получаем полную информацию о задаче через REST API
+            task_info = None
+            if 'ONTASKUPDATE' in event_upper:
+                try:
+                    # Используем основной клиент с BITRIX24_WEBHOOK_TOKEN для получения полной информации
+                    task_info = self.bitrix_client.get_task_by_id(task_id_int)
+                    if not task_info:
+                        logger.warning(f"⚠️ Не удалось получить информацию о задаче {task_id_int} через REST API")
+                        return
+                except Exception as e:
+                    logger.warning(f"⚠️ Ошибка при получении задачи {task_id_int} через REST API: {e}")
+                    return
+            
+            # Получаем название задачи и ответственных
+            if task_info:
+                task_title = task_info.get('title', 'Без названия')
+                responsible_id = task_info.get('responsibleId')
+                created_by_id = task_info.get('createdBy')
+            else:
+                # Fallback на данные из вебхука
+                task_title = task_data.get('TITLE') or task_data.get('title') or 'Без названия'
+                responsible_id = task_data.get('RESPONSIBLE_ID') or task_data.get('responsibleId')
+                created_by_id = task_data.get('CREATED_BY') or task_data.get('createdBy')
+            
+            # Проверяем регистрацию через БД (LINK) - только зарегистрированные пользователи
             telegram_ids = []
+            
+            # Проверяем ответственного
             if responsible_id:
                 try:
-                    telegram_id = self.bitrix_client.get_user_telegram_id(int(responsible_id))
-                    if telegram_id:
-                        telegram_ids.append(telegram_id)
+                    if DATABASE_AVAILABLE:
+                        telegram_id = database.get_telegram_id_by_bitrix_id(int(responsible_id))
+                        if telegram_id:
+                            telegram_ids.append(telegram_id)
+                            logger.info(f"✅ Найден зарегистрированный пользователь (ответственный): {telegram_id}")
+                    else:
+                        # Fallback: пробуем через Bitrix24Client
+                        telegram_id = self.bitrix_client.get_user_telegram_id(int(responsible_id))
+                        if telegram_id:
+                            telegram_ids.append(telegram_id)
                 except Exception as e:
-                    logger.debug(f"Не удалось получить Telegram ID для пользователя {responsible_id}: {e}")
+                    logger.debug(f"Не удалось найти Telegram ID для ответственного {responsible_id}: {e}")
+            
+            # Проверяем создателя (если он отличается от ответственного)
+            if created_by_id and str(created_by_id) != str(responsible_id):
+                try:
+                    if DATABASE_AVAILABLE:
+                        telegram_id = database.get_telegram_id_by_bitrix_id(int(created_by_id))
+                        if telegram_id and telegram_id not in telegram_ids:
+                            telegram_ids.append(telegram_id)
+                            logger.info(f"✅ Найден зарегистрированный пользователь (создатель): {telegram_id}")
+                    else:
+                        # Fallback: пробуем через Bitrix24Client
+                        telegram_id = self.bitrix_client.get_user_telegram_id(int(created_by_id))
+                        if telegram_id and telegram_id not in telegram_ids:
+                            telegram_ids.append(telegram_id)
+                except Exception as e:
+                    logger.debug(f"Не удалось найти Telegram ID для создателя {created_by_id}: {e}")
+            
+            # Отправляем уведомление ТОЛЬКО если есть зарегистрированные пользователи
+            if not telegram_ids:
+                logger.info(f"ℹ️ Нет зарегистрированных пользователей для уведомления о задаче {task_id_int}")
+                logger.info(f"   Создатель: {created_by_id}, Исполнитель: {responsible_id}")
+                return
             
             # Формируем ссылку на задачу
             task_url = self.bitrix_client.get_task_url(task_id_int, int(responsible_id) if responsible_id else None)
             
             # Формируем сообщение в зависимости от типа события
-            if 'ONTASKADD' in event_upper:
-                message = f"создана новая задача <a href='{task_url}'>«{task_title}»</a>"
-                notification_type = "task_added"
-            elif 'ONTASKUPDATE' in event_upper:
-                # Определяем, что именно изменилось
+            if 'ONTASKUPDATE' in event_upper:
+                status = task_info.get('status') if task_info else None
                 status_name = self._get_status_name(status) if status else None
                 if status_name:
                     message = f"задача <a href='{task_url}'>«{task_title}»</a> изменена: статус — {status_name}"
@@ -436,13 +494,13 @@ class TaskNotificationService:
                 logger.debug(f"Уведомление для события {event} задачи {task_id_int} уже отправлено")
                 return
             
-            # Отправляем уведомление в группу
-            await self._send_notification(message, telegram_ids if telegram_ids else None)
+            # Отправляем уведомление с тегами зарегистрированных пользователей
+            await self._send_notification(message, telegram_ids)
             
             # Отмечаем уведомление как отправленное
             self._mark_notification_sent(notification_key, task_id_int, notification_type, event_upper)
             
-            logger.info(f"✅ Отправлено уведомление о событии {event} для задачи {task_id_int}")
+            logger.info(f"✅ Отправлено уведомление о событии {event} для задачи {task_id_int} (уведомлены: {len(telegram_ids)} пользователей)")
             
         except Exception as e:
             logger.error(f"❌ Ошибка при обработке события задачи {event}: {e}", exc_info=True)
@@ -477,22 +535,32 @@ class TaskNotificationService:
             comment_id_int = int(comment_id)
             event_upper = event.upper()
             
-            # Создаем временный Bitrix24Client с токеном из вебхука для получения полной информации
-            webhook_bitrix_client = None
-            if auth_data and auth_data.get('application_token') and auth_data.get('domain'):
-                try:
-                    from bitrix24_client import Bitrix24Client
-                    webhook_bitrix_client = Bitrix24Client(
-                        domain=auth_data['domain'],
-                        webhook_token=auth_data['application_token']
-                    )
-                    logger.debug(f"✅ Создан временный Bitrix24Client для получения полной информации через REST API")
-                except Exception as e:
-                    logger.warning(f"⚠️ Не удалось создать временный Bitrix24Client: {e}")
-                    logger.info("💡 Используем основной Bitrix24Client")
+            # Используем основной Bitrix24Client с вебхук токеном из переменных окружения
+            # application_token из вебхука не является вебхук токеном для REST API и может не иметь прав
+            # на выполнение методов tasks.task.get и tasks.task.comment.get
+            api_client = self.bitrix_client
             
-            # Используем временный клиент или основной
-            api_client = webhook_bitrix_client if webhook_bitrix_client else self.bitrix_client
+            # Если домен из вебхука отличается от домена основного клиента, создаем новый клиент
+            if auth_data and auth_data.get('domain'):
+                webhook_domain = auth_data['domain']
+                main_domain = self.bitrix_client.domain
+                
+                # Если домены отличаются, создаем клиент с правильным доменом, но используем основной токен
+                if webhook_domain != main_domain:
+                    try:
+                        from bitrix24_client import Bitrix24Client
+                        main_webhook_token = os.getenv("BITRIX24_WEBHOOK_TOKEN")
+                        if main_webhook_token:
+                            api_client = Bitrix24Client(
+                                domain=webhook_domain,
+                                webhook_token=main_webhook_token
+                            )
+                            logger.debug(f"✅ Создан Bitrix24Client с доменом из вебхука {webhook_domain} и основным вебхук токеном")
+                        else:
+                            logger.warning(f"⚠️ BITRIX24_WEBHOOK_TOKEN не установлен, используем основной клиент")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Не удалось создать Bitrix24Client с доменом {webhook_domain}: {e}")
+                        logger.info("💡 Используем основной Bitrix24Client")
             
             # Получаем полную информацию о комментарии через REST API
             full_comment_info = None
@@ -505,7 +573,19 @@ class TaskNotificationService:
                     else:
                         logger.warning(f"⚠️ Не удалось получить полную информацию о комментарии {comment_id_int}")
                 except Exception as e:
-                    logger.warning(f"⚠️ Ошибка при получении комментария через REST API: {e}")
+                    error_str = str(e)
+                    # Если ошибка 404 и использовался не основной клиент, пробуем основной клиент
+                    if '404' in error_str or 'Method not found' in error_str:
+                        if api_client != self.bitrix_client:
+                            logger.warning(f"⚠️ Метод недоступен для клиента с доменом {api_client.domain}, пробуем основной клиент")
+                            try:
+                                full_comment_info = self.bitrix_client.get_task_comment(task_id_int, comment_id_int)
+                                if full_comment_info:
+                                    logger.info(f"✅ Получена информация о комментарии через основной клиент")
+                            except Exception as e2:
+                                logger.warning(f"⚠️ Ошибка при получении комментария через основной клиент: {e2}")
+                    else:
+                        logger.warning(f"⚠️ Ошибка при получении комментария через REST API: {e}")
             
             # Получаем информацию о задаче для получения создателя и исполнителя
             try:
@@ -521,10 +601,38 @@ class TaskNotificationService:
                     responsible_id = None
                     created_by_id = None
             except Exception as e:
-                logger.warning(f"⚠️ Ошибка при получении задачи {task_id_int}: {e}")
-                task_title = 'Без названия'
-                responsible_id = None
-                created_by_id = None
+                error_str = str(e)
+                # Если ошибка 404 и использовался не основной клиент, пробуем основной клиент
+                if '404' in error_str or 'Method not found' in error_str:
+                    if api_client != self.bitrix_client:
+                        logger.warning(f"⚠️ Метод недоступен для клиента с доменом {api_client.domain}, пробуем основной клиент")
+                        try:
+                            task_info = self.bitrix_client.get_task_by_id(task_id_int)
+                            if task_info:
+                                task_title = task_info.get('title', 'Без названия')
+                                responsible_id = task_info.get('responsibleId')
+                                created_by_id = task_info.get('createdBy')
+                                logger.info(f"✅ Получена информация о задаче через основной клиент: создатель={created_by_id}, исполнитель={responsible_id}")
+                            else:
+                                logger.warning(f"⚠️ Не удалось получить информацию о задаче {task_id_int} через основной клиент")
+                                task_title = 'Без названия'
+                                responsible_id = None
+                                created_by_id = None
+                        except Exception as e2:
+                            logger.warning(f"⚠️ Ошибка при получении задачи через основной клиент: {e2}")
+                            task_title = 'Без названия'
+                            responsible_id = None
+                            created_by_id = None
+                    else:
+                        logger.warning(f"⚠️ Ошибка при получении задачи {task_id_int}: {e}")
+                        task_title = 'Без названия'
+                        responsible_id = None
+                        created_by_id = None
+                else:
+                    logger.warning(f"⚠️ Ошибка при получении задачи {task_id_int}: {e}")
+                    task_title = 'Без названия'
+                    responsible_id = None
+                    created_by_id = None
             
             # Формируем ссылку на задачу
             task_url = self.bitrix_client.get_task_url(task_id_int, int(responsible_id) if responsible_id else None)
