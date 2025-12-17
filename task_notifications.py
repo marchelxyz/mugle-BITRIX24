@@ -501,17 +501,20 @@ class TaskNotificationService:
         logger.info("   События комментариев: ONTASKCOMMENTADD, ONTASKCOMMENTUPDATE, ONTASKCOMMENTDELETE")
         return
     
-    def _detect_task_changes(self, task_info: Dict, previous_state: Optional[Dict] = None) -> Dict[str, any]:
+    def _detect_task_changes(self, task_info: Dict, previous_state: Optional[Dict] = None, fields_before: Optional[Dict] = None, fields_after: Optional[Dict] = None) -> Dict[str, any]:
         """
         Определение изменений в задаче на основе сравнения текущего состояния с предыдущим
         
-        ВАЖНО: Bitrix24 исходящий вебхук НЕ передает полные данные задачи в FIELDS_BEFORE/FIELDS_AFTER,
-        там только ID задачи. Поэтому мы сравниваем текущее состояние (из REST API) с предыдущим
-        состоянием, сохраненным в БД.
+        Приоритет определения изменений:
+        1. FIELDS_BEFORE и FIELDS_AFTER из вебхука (если доступны и содержат данные)
+        2. Сравнение task_info (текущее состояние из REST API) с previous_state (из БД)
+        3. Анализ только текущего состояния (если предыдущее отсутствует)
         
         Args:
             task_info: Полная информация о задаче из REST API (текущее состояние)
             previous_state: Предыдущее состояние задачи из БД (опционально)
+            fields_before: Данные задачи до изменения из вебхука (FIELDS_BEFORE) - приоритет 1
+            fields_after: Данные задачи после изменения из вебхука (FIELDS_AFTER) - приоритет 1
             
         Returns:
             Словарь с информацией об изменениях:
@@ -582,25 +585,60 @@ class TaskNotificationService:
             logger.debug("Нет данных task_info для определения изменений")
             return changes
         
-        logger.debug(f"Определение изменений: previous_state={previous_state is not None}, task_info={task_info is not None}")
+        logger.debug(f"Определение изменений: previous_state={previous_state is not None}, task_info={task_info is not None}, fields_before={fields_before is not None}, fields_after={fields_after is not None}")
         
-        # Получаем значения полей из task_info (текущее состояние)
-        deadline_after = get_field(task_info, 'DEADLINE', 'deadline', 'Deadline')
-        status_after = get_field(task_info, 'STATUS', 'status', 'Status')
-        responsible_after = get_field(task_info, 'RESPONSIBLE_ID', 'responsibleId', 'RESPONSIBLEID', 'responsible_id')
-        title_after = get_field(task_info, 'TITLE', 'title', 'Title')
+        # ПРИОРИТЕТ 1: Используем данные из вебхука (FIELDS_BEFORE и FIELDS_AFTER), если они доступны и содержат данные
+        use_webhook_data = False
+        deadline_before = None
+        deadline_after = None
+        status_before = None
+        status_after = None
+        responsible_before = None
+        responsible_after = None
+        title_before = None
+        title_after = None
         
-        # Если есть предыдущее состояние, сравниваем значения
-        if previous_state:
-            deadline_before = previous_state.get('deadline') or previous_state.get('DEADLINE')
-            status_before = previous_state.get('status') or previous_state.get('STATUS')
-            responsible_before = previous_state.get('responsible_id') or previous_state.get('RESPONSIBLE_ID')
-            title_before = previous_state.get('title') or previous_state.get('TITLE')
+        if fields_before and fields_after:
+            # Проверяем, содержат ли FIELDS_BEFORE и FIELDS_AFTER реальные данные (не только ID)
+            fields_before_keys = set(fields_before.keys()) if isinstance(fields_before, dict) else set()
+            fields_after_keys = set(fields_after.keys()) if isinstance(fields_after, dict) else set()
             
-            # Проверяем изменение дедлайна (с нормализацией для правильного сравнения)
-            deadline_before_normalized = normalize_date(deadline_before)
-            deadline_after_normalized = normalize_date(deadline_after)
+            # Если есть поля кроме ID, используем данные из вебхука
+            if len(fields_before_keys) > 1 or len(fields_after_keys) > 1:
+                use_webhook_data = True
+                logger.debug(f"Используем данные из вебхука для определения изменений")
+                
+                deadline_before = get_field(fields_before, 'DEADLINE', 'deadline', 'Deadline')
+                deadline_after = get_field(fields_after, 'DEADLINE', 'deadline', 'Deadline')
+                status_before = get_field(fields_before, 'STATUS', 'status', 'Status')
+                status_after = get_field(fields_after, 'STATUS', 'status', 'Status')
+                responsible_before = get_field(fields_before, 'RESPONSIBLE_ID', 'responsibleId', 'RESPONSIBLEID', 'responsible_id')
+                responsible_after = get_field(fields_after, 'RESPONSIBLE_ID', 'responsibleId', 'RESPONSIBLEID', 'responsible_id')
+                title_before = get_field(fields_before, 'TITLE', 'title', 'Title')
+                title_after = get_field(fields_after, 'TITLE', 'title', 'Title')
+        
+        # ПРИОРИТЕТ 2: Если данные из вебхука недоступны, используем task_info и previous_state
+        if not use_webhook_data:
+            # Получаем значения полей из task_info (текущее состояние)
+            deadline_after = get_field(task_info, 'DEADLINE', 'deadline', 'Deadline')
+            status_after = get_field(task_info, 'STATUS', 'status', 'Status')
+            responsible_after = get_field(task_info, 'RESPONSIBLE_ID', 'responsibleId', 'RESPONSIBLEID', 'responsible_id')
+            title_after = get_field(task_info, 'TITLE', 'title', 'Title')
             
+            # Если есть предыдущее состояние, получаем значения из него
+            if previous_state:
+                deadline_before = previous_state.get('deadline') or previous_state.get('DEADLINE')
+                status_before = previous_state.get('status') or previous_state.get('STATUS')
+                responsible_before = previous_state.get('responsible_id') or previous_state.get('RESPONSIBLE_ID')
+                title_before = previous_state.get('title') or previous_state.get('TITLE')
+        
+        # Если есть данные для сравнения (до и после), сравниваем значения
+        # Проверяем изменение дедлайна (с нормализацией для правильного сравнения)
+        if deadline_before is not None or deadline_after is not None:
+            deadline_before_normalized = normalize_date(deadline_before) if deadline_before else None
+            deadline_after_normalized = normalize_date(deadline_after) if deadline_after else None
+            
+            # Сравниваем нормализованные даты (учитываем None)
             if deadline_before_normalized != deadline_after_normalized:
                 changes['deadline_changed'] = True
                 changes['deadline_before'] = deadline_before
@@ -636,7 +674,7 @@ class TaskNotificationService:
                     changes['changes'].append('удален срок сдачи')
             
             # Проверяем изменение статуса
-            if str(status_before) != str(status_after) if status_before and status_after else status_before != status_after:
+            if (status_before is not None or status_after is not None) and str(status_before) != str(status_after):
                 changes['status_changed'] = True
                 changes['status_before'] = status_before
                 changes['status_after'] = status_after
@@ -648,14 +686,14 @@ class TaskNotificationService:
                     changes['changes'].append('статус изменен')
             
             # Проверяем изменение ответственного
-            if str(responsible_before) != str(responsible_after) if responsible_before and responsible_after else responsible_before != responsible_after:
+            if (responsible_before is not None or responsible_after is not None) and str(responsible_before) != str(responsible_after):
                 changes['responsible_changed'] = True
                 changes['responsible_before'] = str(responsible_before) if responsible_before else None
                 changes['responsible_after'] = str(responsible_after) if responsible_after else None
                 changes['changes'].append('изменен исполнитель')
             
             # Проверяем изменение названия
-            if title_before != title_after:
+            if (title_before is not None or title_after is not None) and title_before != title_after:
                 changes['title_changed'] = True
                 changes['changes'].append('изменено название')
         else:
@@ -687,20 +725,19 @@ class TaskNotificationService:
         """
         Обработка события задачи из вебхука Bitrix24
         
-        ВАЖНО: Bitrix24 исходящий вебхук НЕ передает полные данные задачи в FIELDS_BEFORE/FIELDS_AFTER,
-        там только ID задачи. Поэтому мы:
-        1. Получаем полную информацию о задаче через REST API (tasks.task.get)
-        2. Получаем предыдущее состояние задачи из БД
-        3. Сравниваем текущее состояние с предыдущим для определения изменений
+        Приоритет определения изменений:
+        1. Используем FIELDS_BEFORE и FIELDS_AFTER из вебхука (если они содержат данные кроме ID)
+        2. Если данные из вебхука недоступны, получаем полную информацию через REST API
+        3. Сравниваем текущее состояние с предыдущим из БД
         4. Сохраняем текущее состояние в БД для следующего сравнения
         5. Отправляем уведомление ТОЛЬКО ЕСЛИ пользователь зарегистрирован через LINK
         
         Args:
             event: Тип события (ONTASKADD, ONTASKUPDATE, ONTASKDELETE)
-            task_data: Данные задачи из вебхука (обычно FIELDS_AFTER, содержит только ID)
+            task_data: Данные задачи из вебхука (обычно FIELDS_AFTER)
             auth_data: Данные авторизации из вебхука (опционально)
-            fields_before: Данные задачи до изменения (FIELDS_BEFORE) - НЕ ИСПОЛЬЗУЕТСЯ (только ID)
-            fields_after: Данные задачи после изменения (FIELDS_AFTER) - НЕ ИСПОЛЬЗУЕТСЯ (только ID)
+            fields_before: Данные задачи до изменения (FIELDS_BEFORE) - используется для определения изменений
+            fields_after: Данные задачи после изменения (FIELDS_AFTER) - используется для определения изменений
         """
         try:
             task_id = task_data.get('ID') or task_data.get('id')
@@ -805,9 +842,21 @@ class TaskNotificationService:
             # Формируем сообщение в зависимости от типа события
             if 'ONTASKUPDATE' in event_upper:
                 # Определяем изменения через сравнение текущего состояния с предыдущим из БД
-                task_changes = self._detect_task_changes(task_info, previous_state)
+                # Передаем также данные из вебхука для более точного определения изменений
+                logger.info(f"🔍 Определение изменений задачи {task_id_int}:")
+                logger.info(f"   Используем fields_before: {fields_before is not None and len(fields_before) > 1 if fields_before else False}")
+                logger.info(f"   Используем fields_after: {fields_after is not None and len(fields_after) > 1 if fields_after else False}")
+                logger.info(f"   Используем previous_state: {previous_state is not None}")
+                logger.info(f"   Используем task_info: {task_info is not None}")
                 
-                logger.debug(f"Результат определения изменений для задачи {task_id_int}: {task_changes}")
+                task_changes = self._detect_task_changes(task_info, previous_state, fields_before, fields_after)
+                
+                logger.info(f"✅ Результат определения изменений для задачи {task_id_int}:")
+                logger.info(f"   Обнаружено изменений: {len(task_changes['changes'])}")
+                if task_changes['changes']:
+                    logger.info(f"   Изменения: {', '.join(task_changes['changes'])}")
+                else:
+                    logger.info(f"   Изменения не обнаружены (возможно, первое обновление или нет значимых изменений)")
                 
                 # Формируем сообщение на основе обнаруженных изменений
                 if task_changes['changes']:
