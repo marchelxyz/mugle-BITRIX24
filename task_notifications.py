@@ -308,46 +308,53 @@ class TaskNotificationService:
                 # Сначала получаем создателя (если он есть и отличается от ответственного)
                 if created_by_id and str(created_by_id) != str(responsible_id):
                     try:
+                        created_by_telegram_id = None
+                        # Сначала пробуем найти в базе данных
                         if DATABASE_AVAILABLE:
                             created_by_telegram_id = database.get_telegram_id_by_bitrix_id(int(created_by_id))
                             if created_by_telegram_id:
                                 telegram_ids.append(created_by_telegram_id)
-                                logger.info(f"✅ Найден зарегистрированный пользователь (создатель): {created_by_telegram_id}")
-                            else:
-                                logger.debug(f"   Создатель {created_by_id} не зарегистрирован в системе")
-                        else:
-                            # Fallback: пробуем через Bitrix24Client
+                                logger.info(f"✅ Найден Telegram ID создателя в БД: {created_by_telegram_id}")
+                        
+                        # Если не нашли в БД, пробуем через Bitrix24 API (fallback)
+                        if not created_by_telegram_id:
                             created_by_telegram_id = self.bitrix_client.get_user_telegram_id(int(created_by_id))
                             if created_by_telegram_id:
                                 telegram_ids.append(created_by_telegram_id)
-                                logger.info(f"✅ Найден Telegram ID создателя через Bitrix24Client: {created_by_telegram_id}")
+                                logger.info(f"✅ Найден Telegram ID создателя через Bitrix24 API: {created_by_telegram_id}")
+                                # Сохраняем в БД для будущих запросов
+                                if DATABASE_AVAILABLE:
+                                    database.set_telegram_to_bitrix_mapping(created_by_telegram_id, int(created_by_id))
                             else:
-                                logger.debug(f"   Telegram ID создателя {created_by_id} не найден через Bitrix24Client")
+                                logger.debug(f"   Создатель {created_by_id} не найден ни в БД, ни в Bitrix24")
                     except Exception as e:
                         logger.warning(f"⚠️ Ошибка при поиске Telegram ID для создателя {created_by_id}: {e}")
                 
                 # Затем получаем ответственного
                 if responsible_id:
                     try:
+                        responsible_telegram_id = None
+                        # Сначала пробуем найти в базе данных
                         if DATABASE_AVAILABLE:
                             responsible_telegram_id = database.get_telegram_id_by_bitrix_id(int(responsible_id))
-                            if responsible_telegram_id and responsible_telegram_id not in telegram_ids:
-                                telegram_ids.append(responsible_telegram_id)
-                                logger.info(f"✅ Найден зарегистрированный пользователь (ответственный): {responsible_telegram_id}")
-                            elif responsible_telegram_id:
-                                logger.debug(f"   Ответственный {responsible_id} уже в списке уведомлений")
-                            else:
-                                logger.debug(f"   Ответственный {responsible_id} не зарегистрирован в системе")
-                        else:
-                            # Fallback: пробуем через Bitrix24Client
+                            if responsible_telegram_id:
+                                if responsible_telegram_id not in telegram_ids:
+                                    telegram_ids.append(responsible_telegram_id)
+                                    logger.info(f"✅ Найден Telegram ID ответственного в БД: {responsible_telegram_id}")
+                                else:
+                                    logger.debug(f"   Ответственный {responsible_id} уже в списке уведомлений")
+                        
+                        # Если не нашли в БД, пробуем через Bitrix24 API (fallback)
+                        if not responsible_telegram_id:
                             responsible_telegram_id = self.bitrix_client.get_user_telegram_id(int(responsible_id))
                             if responsible_telegram_id and responsible_telegram_id not in telegram_ids:
                                 telegram_ids.append(responsible_telegram_id)
-                                logger.info(f"✅ Найден Telegram ID ответственного через Bitrix24Client: {responsible_telegram_id}")
-                            elif responsible_telegram_id:
-                                logger.debug(f"   Ответственный {responsible_id} уже в списке уведомлений")
-                            else:
-                                logger.debug(f"   Telegram ID ответственного {responsible_id} не найден через Bitrix24Client")
+                                logger.info(f"✅ Найден Telegram ID ответственного через Bitrix24 API: {responsible_telegram_id}")
+                                # Сохраняем в БД для будущих запросов
+                                if DATABASE_AVAILABLE:
+                                    database.set_telegram_to_bitrix_mapping(responsible_telegram_id, int(responsible_id))
+                            elif not responsible_telegram_id:
+                                logger.debug(f"   Ответственный {responsible_id} не найден ни в БД, ни в Bitrix24")
                     except Exception as e:
                         logger.warning(f"⚠️ Ошибка при поиске Telegram ID для ответственного {responsible_id}: {e}")
                 
@@ -411,20 +418,27 @@ class TaskNotificationService:
                 if self._was_notification_sent(notification_key):
                     continue
                 
-                # Получаем Telegram ID ответственного через БД (только зарегистрированные пользователи)
+                # Получаем Telegram ID ответственного через БД и Bitrix24 API
                 telegram_ids = []
                 if responsible_id:
                     try:
+                        telegram_id = None
+                        # Сначала пробуем найти в базе данных
                         if DATABASE_AVAILABLE:
                             telegram_id = database.get_telegram_id_by_bitrix_id(int(responsible_id))
                             if telegram_id:
                                 telegram_ids.append(telegram_id)
-                                logger.info(f"✅ Найден зарегистрированный пользователь (ответственный): {telegram_id}")
-                        else:
-                            # Fallback: пробуем через Bitrix24Client
+                                logger.info(f"✅ Найден Telegram ID ответственного в БД: {telegram_id}")
+                        
+                        # Если не нашли в БД, пробуем через Bitrix24 API (fallback)
+                        if not telegram_id:
                             telegram_id = self.bitrix_client.get_user_telegram_id(int(responsible_id))
                             if telegram_id:
                                 telegram_ids.append(telegram_id)
+                                logger.info(f"✅ Найден Telegram ID ответственного через Bitrix24 API: {telegram_id}")
+                                # Сохраняем в БД для будущих запросов
+                                if DATABASE_AVAILABLE:
+                                    database.set_telegram_to_bitrix_mapping(telegram_id, int(responsible_id))
                     except Exception as e:
                         logger.debug(f"Не удалось найти Telegram ID для ответственного {responsible_id}: {e}")
                 
@@ -801,32 +815,46 @@ class TaskNotificationService:
             # Проверяем ответственного
             if responsible_id:
                 try:
+                    telegram_id = None
+                    # Сначала пробуем найти в базе данных
                     if DATABASE_AVAILABLE:
                         telegram_id = database.get_telegram_id_by_bitrix_id(int(responsible_id))
                         if telegram_id:
                             telegram_ids.append(telegram_id)
-                            logger.info(f"✅ Найден зарегистрированный пользователь (ответственный): {telegram_id}")
-                    else:
-                        # Fallback: пробуем через Bitrix24Client
+                            logger.info(f"✅ Найден Telegram ID ответственного в БД: {telegram_id}")
+                    
+                    # Если не нашли в БД, пробуем через Bitrix24 API (fallback)
+                    if not telegram_id:
                         telegram_id = self.bitrix_client.get_user_telegram_id(int(responsible_id))
                         if telegram_id:
                             telegram_ids.append(telegram_id)
+                            logger.info(f"✅ Найден Telegram ID ответственного через Bitrix24 API: {telegram_id}")
+                            # Сохраняем в БД для будущих запросов
+                            if DATABASE_AVAILABLE:
+                                database.set_telegram_to_bitrix_mapping(telegram_id, int(responsible_id))
                 except Exception as e:
                     logger.debug(f"Не удалось найти Telegram ID для ответственного {responsible_id}: {e}")
             
             # Проверяем создателя (если он отличается от ответственного)
             if created_by_id and str(created_by_id) != str(responsible_id):
                 try:
+                    telegram_id = None
+                    # Сначала пробуем найти в базе данных
                     if DATABASE_AVAILABLE:
                         telegram_id = database.get_telegram_id_by_bitrix_id(int(created_by_id))
                         if telegram_id and telegram_id not in telegram_ids:
                             telegram_ids.append(telegram_id)
-                            logger.info(f"✅ Найден зарегистрированный пользователь (создатель): {telegram_id}")
-                    else:
-                        # Fallback: пробуем через Bitrix24Client
+                            logger.info(f"✅ Найден Telegram ID создателя в БД: {telegram_id}")
+                    
+                    # Если не нашли в БД, пробуем через Bitrix24 API (fallback)
+                    if not telegram_id:
                         telegram_id = self.bitrix_client.get_user_telegram_id(int(created_by_id))
                         if telegram_id and telegram_id not in telegram_ids:
                             telegram_ids.append(telegram_id)
+                            logger.info(f"✅ Найден Telegram ID создателя через Bitrix24 API: {telegram_id}")
+                            # Сохраняем в БД для будущих запросов
+                            if DATABASE_AVAILABLE:
+                                database.set_telegram_to_bitrix_mapping(telegram_id, int(created_by_id))
                 except Exception as e:
                     logger.debug(f"Не удалось найти Telegram ID для создателя {created_by_id}: {e}")
             
@@ -1141,37 +1169,51 @@ class TaskNotificationService:
             # Ищем Telegram ID для создателя задачи (если он зарегистрирован)
             if created_by_id:
                 try:
+                    created_by_telegram_id = None
+                    # Сначала пробуем найти в базе данных
                     if DATABASE_AVAILABLE:
                         created_by_telegram_id = database.get_telegram_id_by_bitrix_id(int(created_by_id))
                         if created_by_telegram_id:
                             telegram_ids.append(created_by_telegram_id)
-                            logger.info(f"✅ Найден Telegram ID для создателя задачи: {created_by_telegram_id}")
-                        else:
-                            logger.debug(f"Создатель задачи {created_by_id} не зарегистрирован в системе")
-                    else:
-                        # Fallback: пробуем через Bitrix24Client
+                            logger.info(f"✅ Найден Telegram ID для создателя задачи в БД: {created_by_telegram_id}")
+                    
+                    # Если не нашли в БД, пробуем через Bitrix24 API (fallback)
+                    if not created_by_telegram_id:
                         created_by_telegram_id = self.bitrix_client.get_user_telegram_id(int(created_by_id))
                         if created_by_telegram_id:
                             telegram_ids.append(created_by_telegram_id)
+                            logger.info(f"✅ Найден Telegram ID для создателя задачи через Bitrix24 API: {created_by_telegram_id}")
+                            # Сохраняем в БД для будущих запросов
+                            if DATABASE_AVAILABLE:
+                                database.set_telegram_to_bitrix_mapping(created_by_telegram_id, int(created_by_id))
+                        else:
+                            logger.debug(f"Создатель задачи {created_by_id} не найден ни в БД, ни в Bitrix24")
                 except Exception as e:
                     logger.debug(f"Не удалось найти Telegram ID для создателя {created_by_id}: {e}")
             
             # Ищем Telegram ID для исполнителя задачи (если он зарегистрирован)
             if responsible_id:
                 try:
+                    responsible_telegram_id = None
+                    # Сначала пробуем найти в базе данных
                     if DATABASE_AVAILABLE:
                         responsible_telegram_id = database.get_telegram_id_by_bitrix_id(int(responsible_id))
                         if responsible_telegram_id:
                             if responsible_telegram_id not in telegram_ids:
                                 telegram_ids.append(responsible_telegram_id)
-                                logger.info(f"✅ Найден Telegram ID для исполнителя задачи: {responsible_telegram_id}")
-                        else:
-                            logger.debug(f"Исполнитель задачи {responsible_id} не зарегистрирован в системе")
-                    else:
-                        # Fallback: пробуем через Bitrix24Client
+                                logger.info(f"✅ Найден Telegram ID для исполнителя задачи в БД: {responsible_telegram_id}")
+                    
+                    # Если не нашли в БД, пробуем через Bitrix24 API (fallback)
+                    if not responsible_telegram_id:
                         responsible_telegram_id = self.bitrix_client.get_user_telegram_id(int(responsible_id))
                         if responsible_telegram_id and responsible_telegram_id not in telegram_ids:
                             telegram_ids.append(responsible_telegram_id)
+                            logger.info(f"✅ Найден Telegram ID для исполнителя задачи через Bitrix24 API: {responsible_telegram_id}")
+                            # Сохраняем в БД для будущих запросов
+                            if DATABASE_AVAILABLE:
+                                database.set_telegram_to_bitrix_mapping(responsible_telegram_id, int(responsible_id))
+                        elif not responsible_telegram_id:
+                            logger.debug(f"Исполнитель задачи {responsible_id} не найден ни в БД, ни в Bitrix24")
                 except Exception as e:
                     logger.debug(f"Не удалось найти Telegram ID для исполнителя {responsible_id}: {e}")
             
@@ -1187,19 +1229,26 @@ class TaskNotificationService:
                         should_add_author = False
                     
                     if should_add_author:
+                        author_telegram_id = None
+                        # Сначала пробуем найти в базе данных
                         if DATABASE_AVAILABLE:
                             author_telegram_id = database.get_telegram_id_by_bitrix_id(author_id_int)
                             if author_telegram_id:
                                 if author_telegram_id not in telegram_ids:
                                     telegram_ids.append(author_telegram_id)
-                                    logger.info(f"✅ Найден Telegram ID для автора комментария: {author_telegram_id}")
-                            else:
-                                logger.debug(f"Автор комментария {author_id_int} не зарегистрирован в системе")
-                        else:
-                            # Fallback: пробуем через Bitrix24Client
+                                    logger.info(f"✅ Найден Telegram ID для автора комментария в БД: {author_telegram_id}")
+                        
+                        # Если не нашли в БД, пробуем через Bitrix24 API (fallback)
+                        if not author_telegram_id:
                             author_telegram_id = self.bitrix_client.get_user_telegram_id(author_id_int)
                             if author_telegram_id and author_telegram_id not in telegram_ids:
                                 telegram_ids.append(author_telegram_id)
+                                logger.info(f"✅ Найден Telegram ID для автора комментария через Bitrix24 API: {author_telegram_id}")
+                                # Сохраняем в БД для будущих запросов
+                                if DATABASE_AVAILABLE:
+                                    database.set_telegram_to_bitrix_mapping(author_telegram_id, author_id_int)
+                            elif not author_telegram_id:
+                                logger.debug(f"Автор комментария {author_id_int} не найден ни в БД, ни в Bitrix24")
                 except Exception as e:
                     logger.debug(f"Не удалось найти Telegram ID для автора комментария {author_id}: {e}")
             
