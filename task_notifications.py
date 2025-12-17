@@ -3,6 +3,7 @@
 """
 import os
 import logging
+import re
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Set
 from bitrix24_client import Bitrix24Client
@@ -1204,9 +1205,11 @@ class TaskNotificationService:
                 # Если есть текст комментария, добавляем его в сообщение
                 comment_text_preview = ""
                 if comment_text:
+                    # Форматируем текст комментария (удаляем теги Bitrix24)
+                    formatted_comment = self._format_bitrix_text(comment_text)
                     # Используем уже полученный текст комментария
-                    comment_text_preview = str(comment_text)[:100]
-                    if len(str(comment_text)) > 100:
+                    comment_text_preview = str(formatted_comment)[:100]
+                    if len(str(formatted_comment)) > 100:
                         comment_text_preview += "..."
                     comment_text_preview = f": {comment_text_preview}"
                 elif full_comment_info:
@@ -1218,8 +1221,10 @@ class TaskNotificationService:
                         full_comment_info.get('POST_MESSAGE')
                     )
                     if comment_message:
-                        comment_text_preview = str(comment_message)[:100]
-                        if len(str(comment_message)) > 100:
+                        # Форматируем текст комментария (удаляем теги Bitrix24)
+                        formatted_message = self._format_bitrix_text(comment_message)
+                        comment_text_preview = str(formatted_message)[:100]
+                        if len(str(formatted_message)) > 100:
                             comment_text_preview += "..."
                         comment_text_preview = f": {comment_text_preview}"
                 message = f"в задаче <a href='{task_url}'>«{task_title}»</a> новый комментарий{comment_text_preview}"
@@ -1253,6 +1258,59 @@ class TaskNotificationService:
             
         except Exception as e:
             logger.error(f"❌ Ошибка при обработке события комментария {event}: {e}", exc_info=True)
+    
+    def _format_bitrix_text(self, text: str) -> str:
+        """
+        Форматирование текста из Bitrix24 для читаемого отображения
+        
+        Удаляет теги Bitrix24 и преобразует их в читаемый формат:
+        - [USER=ID]Имя[/USER] -> Имя
+        - [TIMESTAMP=timestamp] -> Дата и время
+        
+        Args:
+            text: Текст с тегами Bitrix24
+            
+        Returns:
+            Отформатированный текст
+        """
+        if not text:
+            return text
+        
+        formatted_text = str(text)
+        
+        # Удаляем теги [USER=ID]Имя[/USER] и оставляем только имя
+        # Паттерн: [USER=число]текст[/USER]
+        user_pattern = r'\[USER=\d+\]([^\]]+)\[/USER\]'
+        formatted_text = re.sub(user_pattern, r'\1', formatted_text)
+        
+        # Преобразуем [TIMESTAMP=timestamp] в читаемую дату и время
+        # Паттерн: [TIMESTAMP=число] (может быть обрезан, поэтому ищем начало)
+        def replace_timestamp(match):
+            """Заменяет TIMESTAMP на читаемую дату"""
+            try:
+                # Извлекаем timestamp из тега (все символы после = до пробела или конца)
+                full_match = match.group(0)  # Полный совпавший текст
+                # Извлекаем число после TIMESTAMP=
+                timestamp_match = re.search(r'TIMESTAMP=(\d+)', full_match)
+                if timestamp_match:
+                    timestamp_str = timestamp_match.group(1)
+                    timestamp = int(timestamp_str)
+                    # Преобразуем Unix timestamp в дату и время
+                    dt = datetime.fromtimestamp(timestamp)
+                    # Форматируем в читаемый вид: "ДД.ММ.ГГГГ ЧЧ:ММ"
+                    return dt.strftime('%d.%m.%Y %H:%M')
+            except (ValueError, OSError, OverflowError) as e:
+                logger.debug(f"Ошибка при преобразовании timestamp: {e}")
+                # Если не удалось преобразовать, возвращаем пустую строку
+                return ''
+            return ''
+        
+        # Ищем [TIMESTAMP=число] или [TIMESTAMP=число ...] (может быть обрезан)
+        # Паттерн ищет [TIMESTAMP= и затем цифры до пробела, закрывающей скобки или конца строки
+        timestamp_pattern = r'\[TIMESTAMP=\d+[^\]]*\]?'
+        formatted_text = re.sub(timestamp_pattern, replace_timestamp, formatted_text)
+        
+        return formatted_text
     
     def _get_status_name(self, status: str) -> str:
         """
