@@ -2023,27 +2023,60 @@ class Bitrix24Client:
             
             # Вариант 1: camelCase параметры
             try:
+                logger.debug(f"🔍 Попытка 1: im.message.get с параметрами chatId={chat_id}, id={message_id}")
                 result = self._make_request("im.message.get", {
                     "chatId": chat_id,
                     "id": message_id
                 })
+                logger.debug(f"✅ Вариант 1 успешен: получен результат")
             except Exception as e1:
+                logger.debug(f"❌ Вариант 1 не сработал: {type(e1).__name__}: {e1}")
                 # Вариант 2: UPPERCASE параметры
                 try:
+                    logger.debug(f"🔍 Попытка 2: im.message.get с параметрами CHAT_ID={chat_id}, ID={message_id}")
                     result = self._make_request("im.message.get", {
                         "CHAT_ID": chat_id,
                         "ID": message_id
                     })
+                    logger.debug(f"✅ Вариант 2 успешен: получен результат")
                 except Exception as e2:
+                    logger.debug(f"❌ Вариант 2 не сработал: {type(e2).__name__}: {e2}")
                     # Вариант 3: смешанный формат
                     try:
+                        logger.debug(f"🔍 Попытка 3: im.message.get с параметрами CHAT_ID={chat_id}, id={message_id}")
                         result = self._make_request("im.message.get", {
                             "CHAT_ID": chat_id,
                             "id": message_id
                         })
+                        logger.debug(f"✅ Вариант 3 успешен: получен результат")
                     except Exception as e3:
-                        logger.warning(f"Все варианты вызова im.message.get не сработали для сообщения {message_id} в чате {chat_id}")
-                        logger.debug(f"Ошибки: {e1}, {e2}, {e3}")
+                        logger.warning(f"⚠️ Все варианты вызова im.message.get не сработали для сообщения {message_id} в чате {chat_id}")
+                        logger.warning(f"   Ошибка 1: {type(e1).__name__}: {e1}")
+                        logger.warning(f"   Ошибка 2: {type(e2).__name__}: {e2}")
+                        logger.warning(f"   Ошибка 3: {type(e3).__name__}: {e3}")
+                        # Пробуем альтернативный метод - получить список сообщений и найти нужное
+                        try:
+                            logger.debug(f"🔍 Попытка альтернативного метода: im.message.list с CHAT_ID={chat_id}")
+                            list_result = self._make_request("im.message.list", {
+                                "CHAT_ID": chat_id,
+                                "LIMIT": 100
+                            })
+                            if list_result and list_result.get("result"):
+                                messages = list_result["result"] if isinstance(list_result["result"], list) else [list_result["result"]]
+                                for msg in messages:
+                                    msg_id = msg.get("id") or msg.get("ID")
+                                    if msg_id and str(msg_id) == str(message_id):
+                                        logger.info(f"✅ Найдено сообщение {message_id} через im.message.list")
+                                        return {
+                                            "id": msg_id,
+                                            "chatId": chat_id,
+                                            "authorId": msg.get("authorId") or msg.get("AUTHOR_ID"),
+                                            "message": msg.get("message") or msg.get("MESSAGE"),
+                                            "date": msg.get("date") or msg.get("DATE"),
+                                            "files": msg.get("files") or msg.get("FILES", [])
+                                        }
+                        except Exception as e4:
+                            logger.debug(f"❌ Альтернативный метод im.message.list тоже не сработал: {type(e4).__name__}: {e4}")
             
             if result and result.get("result"):
                 message_data = result["result"]

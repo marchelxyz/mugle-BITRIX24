@@ -789,20 +789,32 @@ class TaskNotificationService:
                 message_id = comment_data.get('MESSAGE_ID') or str(comment_id_int)
                 try:
                     message_id_int = int(message_id)
+                    logger.info(f"🔍 Попытка получить текст комментария: chatId={chat_id}, messageId={message_id_int}")
                     full_comment_info = api_client.get_task_chat_message(chat_id, message_id_int)
                     if full_comment_info:
                         logger.info(f"✅ Получена информация о сообщении {message_id_int} из чата {chat_id} через API чатов")
-                        logger.debug(f"Автор сообщения: {full_comment_info.get('authorId')}")
+                        logger.info(f"   Автор сообщения: {full_comment_info.get('authorId')}")
+                        comment_text = full_comment_info.get('message') or full_comment_info.get('MESSAGE')
+                        if comment_text:
+                            preview = str(comment_text)[:50] + "..." if len(str(comment_text)) > 50 else str(comment_text)
+                            logger.info(f"   Текст комментария: {preview}")
+                        else:
+                            logger.warning(f"⚠️ Текст комментария не найден в ответе API")
                     else:
-                        logger.debug(f"ℹ️ Не удалось получить сообщение {message_id_int} из чата {chat_id}")
+                        logger.warning(f"⚠️ Не удалось получить сообщение {message_id_int} из чата {chat_id} (full_comment_info = None)")
+                        logger.info(f"💡 Проверьте права вебхука на метод im.message.get в разделе 'Мессенджер (im)'")
                 except (ValueError, TypeError) as e:
-                    logger.debug(f"ℹ️ Неверный формат MESSAGE_ID: {message_id}, ошибка: {e}")
+                    logger.warning(f"⚠️ Неверный формат MESSAGE_ID: {message_id}, ошибка: {e}")
                 except Exception as e:
                     error_str = str(e)
+                    logger.warning(f"⚠️ Ошибка при получении сообщения из чата через API: {type(e).__name__}: {e}")
                     if 'Method not found' in error_str or 'Could not find description' in error_str:
-                        logger.debug(f"ℹ️ Метод im.message.get недоступен (возможно, нет прав вебхука на im.message.get)")
+                        logger.warning(f"💡 Метод im.message.get недоступен. Проверьте права вебхука:")
+                        logger.warning(f"   1. Bitrix24 → Настройки → Разработчикам → Входящий вебхук")
+                        logger.warning(f"   2. Выберите ваш вебхук → Права доступа")
+                        logger.warning(f"   3. Найдите раздел 'Мессенджер (im)' и включите права на модуль")
                     else:
-                        logger.debug(f"ℹ️ Ошибка при получении сообщения из чата через API: {e}")
+                        logger.debug(f"   Детали ошибки: {error_str}")
             elif not chat_id:
                 logger.debug(f"ℹ️ У задачи {task_id_int} нет chatId, пропускаем получение сообщения через API чатов")
             elif not comment_id_int:
