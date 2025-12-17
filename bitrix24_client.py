@@ -2300,6 +2300,25 @@ class Bitrix24Client:
                 'func': lambda: self._try_get_message_method12(chat_id, message_id)
             })
         
+        # Метод 13: task.commentitem.get (новый метод из документации Bitrix24)
+        methods.append({
+            'name': 'Метод 13: task.commentitem.get',
+            'func': lambda: self._try_get_message_method13(task_id, message_id)
+        })
+        
+        # Метод 14: forum.message.get (получение комментария через форум API)
+        methods.append({
+            'name': 'Метод 14: forum.message.get (через форум)',
+            'func': lambda: self._try_get_message_method14(task_id, message_id)
+        })
+        
+        # Метод 15: im.dialog.messages.get (новый метод из документации Bitrix24)
+        if chat_id:
+            methods.append({
+                'name': 'Метод 15: im.dialog.messages.get (новый API)',
+                'func': lambda: self._try_get_message_method15(chat_id, message_id)
+            })
+        
         # Пробуем все методы по очереди
         for method_info in methods:
             try:
@@ -2472,3 +2491,506 @@ class Bitrix24Client:
             "MESSAGE_ID": message_id
         })
         return result.get("result") if result else None
+    
+    def _try_get_message_method13(self, task_id: int, item_id: int) -> Optional[Dict]:
+        """
+        Метод 13: task.commentitem.get (новый метод из документации Bitrix24)
+        
+        Параметры согласно документации:
+        - TASKID (integer) — идентификатор задачи
+        - ITEMID (integer) — идентификатор комментария
+        """
+        try:
+            # Пробуем разные варианты названия метода и параметров
+            variants = [
+                # Вариант 1: task.commentitem.get с TASKID и ITEMID (как в документации)
+                {
+                    "method": "task.commentitem.get",
+                    "params": {"TASKID": task_id, "ITEMID": item_id}
+                },
+                # Вариант 2: tasks.task.commentitem.get с TASKID и ITEMID
+                {
+                    "method": "tasks.task.commentitem.get",
+                    "params": {"TASKID": task_id, "ITEMID": item_id}
+                },
+                # Вариант 3: task.commentitem.get с taskId и itemId (camelCase)
+                {
+                    "method": "task.commentitem.get",
+                    "params": {"taskId": task_id, "itemId": item_id}
+                },
+                # Вариант 4: tasks.task.commentitem.get с taskId и itemId
+                {
+                    "method": "tasks.task.commentitem.get",
+                    "params": {"taskId": task_id, "itemId": item_id}
+                },
+                # Вариант 5: task.commentitem.get с TASK_ID и ITEM_ID
+                {
+                    "method": "task.commentitem.get",
+                    "params": {"TASK_ID": task_id, "ITEM_ID": item_id}
+                },
+                # Вариант 6: tasks.task.commentitem.get с TASK_ID и ITEM_ID
+                {
+                    "method": "tasks.task.commentitem.get",
+                    "params": {"TASK_ID": task_id, "ITEM_ID": item_id}
+                },
+            ]
+            
+            for variant in variants:
+                try:
+                    logger.debug(f"Попытка метода {variant['method']} с параметрами {variant['params']}")
+                    result = self._make_request(variant["method"], variant["params"])
+                    
+                    if result and result.get("result"):
+                        # Обрабатываем результат - может быть в разных форматах
+                        comment_data = result["result"]
+                        
+                        # Если результат - словарь с ключом "comment" или "item"
+                        if isinstance(comment_data, dict):
+                            # Пробуем разные возможные ключи
+                            comment = (
+                                comment_data.get("comment") or 
+                                comment_data.get("item") or 
+                                comment_data.get("COMMENT") or
+                                comment_data.get("ITEM") or
+                                comment_data  # Если сам результат и есть комментарий
+                            )
+                            
+                            if isinstance(comment, dict):
+                                # Извлекаем текст из разных возможных полей
+                                comment_text = (
+                                    comment.get("POST_MESSAGE") or
+                                    comment.get("postMessage") or
+                                    comment.get("MESSAGE") or
+                                    comment.get("message") or
+                                    comment.get("TEXT") or
+                                    comment.get("text") or
+                                    comment.get("CONTENT") or
+                                    comment.get("content")
+                                )
+                                
+                                if comment_text:
+                                    return {
+                                        "message": comment_text,
+                                        "authorId": comment.get("AUTHOR_ID") or comment.get("authorId"),
+                                        "id": item_id
+                                    }
+                            elif isinstance(comment, str):
+                                # Если результат - просто строка с текстом
+                                return {
+                                    "message": comment,
+                                    "id": item_id
+                                }
+                        
+                        # Если результат - строка напрямую
+                        elif isinstance(comment_data, str):
+                            return {
+                                "message": comment_data,
+                                "id": item_id
+                            }
+                        
+                        logger.debug(f"Метод {variant['method']} вернул результат, но не удалось извлечь текст")
+                        logger.debug(f"   Структура результата: {type(comment_data)}, ключи: {list(comment_data.keys()) if isinstance(comment_data, dict) else 'N/A'}")
+                except Exception as e:
+                    error_str = str(e)
+                    # Если метод не найден (404), пробуем следующий вариант
+                    if "404" in error_str or "not found" in error_str.lower() or "Method not found" in error_str:
+                        logger.debug(f"Метод {variant['method']} не найден, пробуем следующий вариант")
+                        continue
+                    # Для других ошибок логируем и пробуем следующий вариант
+                    logger.debug(f"Ошибка при вызове {variant['method']}: {e}")
+                    continue
+            
+            return None
+        except Exception as e:
+            logger.debug(f"Ошибка в _try_get_message_method13: {e}")
+            return None
+    
+    def _try_get_message_method14(self, task_id: int, message_id: int) -> Optional[Dict]:
+        """
+        Метод 14: forum.message.get (получение комментария через форум API)
+        
+        Согласно PHP коду Bitrix24, комментарии к задачам хранятся в форуме:
+        - Топик форума имеет XML_ID = 'TASK_' + taskId
+        - Сообщения в топике - это комментарии к задаче
+        - PARAM1 != 'TK' для обычных комментариев
+        
+        Параметры:
+        - task_id: ID задачи
+        - message_id: ID сообщения (комментария) в форуме
+        """
+        try:
+            # Пробуем разные варианты получения сообщения через форум API
+            variants = [
+                # Вариант 1: forum.message.get с ID сообщения
+                {
+                    "method": "forum.message.get",
+                    "params": {"ID": message_id}
+                },
+                # Вариант 2: forum.message.get с id (camelCase)
+                {
+                    "method": "forum.message.get",
+                    "params": {"id": message_id}
+                },
+                # Вариант 3: forum.message.get с MESSAGE_ID
+                {
+                    "method": "forum.message.get",
+                    "params": {"MESSAGE_ID": message_id}
+                },
+                # Вариант 4: forum.message.get с messageId
+                {
+                    "method": "forum.message.get",
+                    "params": {"messageId": message_id}
+                },
+            ]
+            
+            for variant in variants:
+                try:
+                    logger.debug(f"Попытка метода {variant['method']} с параметрами {variant['params']}")
+                    result = self._make_request(variant["method"], variant["params"])
+                    
+                    if result and result.get("result"):
+                        message_data = result["result"]
+                        
+                        # Если результат - словарь с сообщением
+                        if isinstance(message_data, dict):
+                            # Извлекаем текст из разных возможных полей
+                            message_text = (
+                                message_data.get("POST_MESSAGE") or
+                                message_data.get("postMessage") or
+                                message_data.get("MESSAGE") or
+                                message_data.get("message") or
+                                message_data.get("TEXT") or
+                                message_data.get("text") or
+                                message_data.get("CONTENT") or
+                                message_data.get("content")
+                            )
+                            
+                            if message_text:
+                                return {
+                                    "message": message_text,
+                                    "authorId": message_data.get("AUTHOR_ID") or message_data.get("authorId"),
+                                    "id": message_id
+                                }
+                        
+                        # Если результат - строка напрямую
+                        elif isinstance(message_data, str):
+                            return {
+                                "message": message_data,
+                                "id": message_id
+                            }
+                        
+                        logger.debug(f"Метод {variant['method']} вернул результат, но не удалось извлечь текст")
+                        logger.debug(f"   Структура результата: {type(message_data)}, ключи: {list(message_data.keys()) if isinstance(message_data, dict) else 'N/A'}")
+                except Exception as e:
+                    error_str = str(e)
+                    # Если метод не найден (404), пробуем следующий вариант
+                    if "404" in error_str or "not found" in error_str.lower() or "Method not found" in error_str:
+                        logger.debug(f"Метод {variant['method']} не найден, пробуем следующий вариант")
+                        continue
+                    # Для других ошибок логируем и пробуем следующий вариант
+                    logger.debug(f"Ошибка при вызове {variant['method']}: {e}")
+                    continue
+            
+            # Если прямой метод не сработал, пробуем получить через топик задачи
+            # Согласно PHP коду: XML_ID топика = 'TASK_' + taskId
+            topic_xml_id = f"TASK_{task_id}"
+            
+            # Пробуем получить список сообщений из топика задачи
+            list_variants = [
+                # Вариант 1: forum.message.list с фильтром по топику
+                {
+                    "method": "forum.message.list",
+                    "params": {
+                        "FILTER": {
+                            "TOPIC.XML_ID": topic_xml_id,
+                            "!PARAM1": "TK"
+                        }
+                    }
+                },
+                # Вариант 2: forum.message.list с XML_ID топика
+                {
+                    "method": "forum.message.list",
+                    "params": {
+                        "XML_ID": topic_xml_id
+                    }
+                },
+                # Вариант 3: forum.topic.get по XML_ID, затем forum.message.list
+                {
+                    "method": "forum.topic.get",
+                    "params": {
+                        "XML_ID": topic_xml_id
+                    }
+                },
+            ]
+            
+            topic_id = None
+            for list_variant in list_variants:
+                try:
+                    logger.debug(f"Попытка получения топика/сообщений через {list_variant['method']}")
+                    list_result = self._make_request(list_variant["method"], list_variant["params"])
+                    
+                    if list_result and list_result.get("result"):
+                        result_data = list_result["result"]
+                        
+                        # Если получили топик, извлекаем его ID
+                        if isinstance(result_data, dict) and list_variant["method"] == "forum.topic.get":
+                            topic_id = result_data.get("ID") or result_data.get("id")
+                            if topic_id:
+                                logger.debug(f"Найден топик с ID {topic_id} для задачи {task_id}")
+                                break
+                        
+                        # Если получили список сообщений
+                        elif isinstance(result_data, list) or (isinstance(result_data, dict) and "messages" in result_data):
+                            messages = result_data if isinstance(result_data, list) else result_data.get("messages", [])
+                            
+                            # Ищем нужное сообщение по ID
+                            for msg in messages:
+                                msg_id = msg.get("ID") or msg.get("id")
+                                if msg_id and str(msg_id) == str(message_id):
+                                    # Нашли нужное сообщение
+                                    message_text = (
+                                        msg.get("POST_MESSAGE") or
+                                        msg.get("postMessage") or
+                                        msg.get("MESSAGE") or
+                                        msg.get("message") or
+                                        msg.get("TEXT") or
+                                        msg.get("text")
+                                    )
+                                    
+                                    if message_text:
+                                        return {
+                                            "message": message_text,
+                                            "authorId": msg.get("AUTHOR_ID") or msg.get("authorId"),
+                                            "id": message_id
+                                        }
+                except Exception as e:
+                    error_str = str(e)
+                    if "404" in error_str or "not found" in error_str.lower() or "Method not found" in error_str:
+                        logger.debug(f"Метод {list_variant['method']} не найден")
+                        continue
+                    logger.debug(f"Ошибка при вызове {list_variant['method']}: {e}")
+                    continue
+            
+            # Если получили topic_id, пробуем получить сообщения из топика
+            if topic_id:
+                try:
+                    logger.debug(f"Попытка получить сообщения из топика {topic_id}")
+                    messages_result = self._make_request("forum.message.list", {
+                        "TOPIC_ID": topic_id,
+                        "FILTER": {
+                            "!PARAM1": "TK"
+                        }
+                    })
+                    
+                    if messages_result and messages_result.get("result"):
+                        messages = messages_result["result"]
+                        if isinstance(messages, list):
+                            for msg in messages:
+                                msg_id = msg.get("ID") or msg.get("id")
+                                if msg_id and str(msg_id) == str(message_id):
+                                    message_text = (
+                                        msg.get("POST_MESSAGE") or
+                                        msg.get("postMessage") or
+                                        msg.get("MESSAGE") or
+                                        msg.get("message")
+                                    )
+                                    
+                                    if message_text:
+                                        return {
+                                            "message": message_text,
+                                            "authorId": msg.get("AUTHOR_ID") or msg.get("authorId"),
+                                            "id": message_id
+                                        }
+                except Exception as e:
+                    logger.debug(f"Ошибка при получении сообщений из топика {topic_id}: {e}")
+            
+            return None
+        except Exception as e:
+            logger.debug(f"Ошибка в _try_get_message_method14: {e}")
+            return None
+    
+    def _try_get_message_method15(self, chat_id: int, message_id: int) -> Optional[Dict]:
+        """
+        Метод 15: im.dialog.messages.get (новый метод из документации Bitrix24)
+        
+        Получает список последних сообщений в чате и ищет нужное сообщение по ID.
+        
+        Согласно документации:
+        - DIALOG_ID может быть в формате 'chat{chat_id}' или просто '{chat_id}'
+        - Если не переданы LAST_ID и FIRST_ID, будут загружены последние 20 сообщений
+        - Для загрузки предыдущих сообщений используется LAST_ID
+        - Для загрузки следующих сообщений используется FIRST_ID
+        
+        Параметры:
+        - chat_id: ID чата задачи
+        - message_id: ID сообщения (комментария), которое нужно найти
+        """
+        try:
+            # Пробуем разные форматы DIALOG_ID
+            dialog_id_variants = [
+                f"chat{chat_id}",  # Формат chat29
+                str(chat_id),      # Формат 29
+                chat_id            # Числовой формат
+            ]
+            
+            for dialog_id in dialog_id_variants:
+                try:
+                    # Сначала пробуем получить последние сообщения (без фильтров)
+                    logger.debug(f"Попытка получить сообщения через im.dialog.messages.get с DIALOG_ID={dialog_id}")
+                    result = self._make_request("im.dialog.messages.get", {
+                        "DIALOG_ID": dialog_id,
+                        "LIMIT": 100  # Увеличиваем лимит для поиска нужного сообщения
+                    })
+                    
+                    if result and result.get("result"):
+                        result_data = result["result"]
+                        
+                        # Извлекаем массив сообщений
+                        messages = None
+                        if isinstance(result_data, dict):
+                            messages = result_data.get("messages") or result_data.get("MESSAGES")
+                        elif isinstance(result_data, list):
+                            messages = result_data
+                        
+                        if messages and isinstance(messages, list):
+                            # Ищем нужное сообщение по ID
+                            for msg in messages:
+                                msg_id = msg.get("id") or msg.get("ID")
+                                if msg_id and str(msg_id) == str(message_id):
+                                    # Нашли нужное сообщение
+                                    message_text = (
+                                        msg.get("text") or
+                                        msg.get("TEXT") or
+                                        msg.get("message") or
+                                        msg.get("MESSAGE")
+                                    )
+                                    
+                                    if message_text:
+                                        return {
+                                            "message": message_text,
+                                            "authorId": msg.get("author_id") or msg.get("AUTHOR_ID"),
+                                            "id": message_id,
+                                            "date": msg.get("date") or msg.get("DATE")
+                                        }
+                            
+                            # Если не нашли в первых 100 сообщениях, пробуем загрузить предыдущие
+                            # Используем LAST_ID с минимальным ID из полученных сообщений
+                            if len(messages) > 0:
+                                min_id = None
+                                for msg in messages:
+                                    msg_id = msg.get("id") or msg.get("ID")
+                                    if msg_id:
+                                        msg_id_int = int(msg_id)
+                                        if min_id is None or msg_id_int < min_id:
+                                            min_id = msg_id_int
+                                
+                                # Если нужное сообщение имеет больший ID, чем минимальный в выборке,
+                                # значит оно в более старых сообщениях - пробуем загрузить их
+                                if min_id and int(message_id) < min_id:
+                                    logger.debug(f"Сообщение {message_id} не найдено в первых 100, пробуем загрузить предыдущие (LAST_ID={min_id})")
+                                    
+                                    # Загружаем предыдущие сообщения
+                                    prev_result = self._make_request("im.dialog.messages.get", {
+                                        "DIALOG_ID": dialog_id,
+                                        "LAST_ID": min_id,
+                                        "LIMIT": 100
+                                    })
+                                    
+                                    if prev_result and prev_result.get("result"):
+                                        prev_data = prev_result["result"]
+                                        prev_messages = None
+                                        if isinstance(prev_data, dict):
+                                            prev_messages = prev_data.get("messages") or prev_data.get("MESSAGES")
+                                        elif isinstance(prev_data, list):
+                                            prev_messages = prev_data
+                                        
+                                        if prev_messages:
+                                            # Ищем в предыдущих сообщениях
+                                            for msg in prev_messages:
+                                                msg_id = msg.get("id") or msg.get("ID")
+                                                if msg_id and str(msg_id) == str(message_id):
+                                                    message_text = (
+                                                        msg.get("text") or
+                                                        msg.get("TEXT") or
+                                                        msg.get("message") or
+                                                        msg.get("MESSAGE")
+                                                    )
+                                                    
+                                                    if message_text:
+                                                        return {
+                                                            "message": message_text,
+                                                            "authorId": msg.get("author_id") or msg.get("AUTHOR_ID"),
+                                                            "id": message_id,
+                                                            "date": msg.get("date") or msg.get("DATE")
+                                                        }
+                                
+                                # Если нужное сообщение имеет больший ID, чем максимальный в выборке,
+                                # значит оно в более новых сообщениях - пробуем загрузить их
+                                else:
+                                    max_id = None
+                                    for msg in messages:
+                                        msg_id = msg.get("id") or msg.get("ID")
+                                        if msg_id:
+                                            msg_id_int = int(msg_id)
+                                            if max_id is None or msg_id_int > max_id:
+                                                max_id = msg_id_int
+                                    
+                                    if max_id and int(message_id) > max_id:
+                                        logger.debug(f"Сообщение {message_id} не найдено в первых 100, пробуем загрузить следующие (FIRST_ID={max_id})")
+                                        
+                                        # Загружаем следующие сообщения
+                                        next_result = self._make_request("im.dialog.messages.get", {
+                                            "DIALOG_ID": dialog_id,
+                                            "FIRST_ID": max_id,
+                                            "LIMIT": 100
+                                        })
+                                        
+                                        if next_result and next_result.get("result"):
+                                            next_data = next_result["result"]
+                                            next_messages = None
+                                            if isinstance(next_data, dict):
+                                                next_messages = next_data.get("messages") or next_data.get("MESSAGES")
+                                            elif isinstance(next_data, list):
+                                                next_messages = next_data
+                                            
+                                            if next_messages:
+                                                # Ищем в следующих сообщениях
+                                                for msg in next_messages:
+                                                    msg_id = msg.get("id") or msg.get("ID")
+                                                    if msg_id and str(msg_id) == str(message_id):
+                                                        message_text = (
+                                                            msg.get("text") or
+                                                            msg.get("TEXT") or
+                                                            msg.get("message") or
+                                                            msg.get("MESSAGE")
+                                                        )
+                                                        
+                                                        if message_text:
+                                                            return {
+                                                                "message": message_text,
+                                                                "authorId": msg.get("author_id") or msg.get("AUTHOR_ID"),
+                                                                "id": message_id,
+                                                                "date": msg.get("date") or msg.get("DATE")
+                                                            }
+                        
+                        logger.debug(f"Метод im.dialog.messages.get вернул результат, но сообщение {message_id} не найдено")
+                        logger.debug(f"   Структура результата: {type(result_data)}, ключи: {list(result_data.keys()) if isinstance(result_data, dict) else 'N/A'}")
+                        logger.debug(f"   Количество сообщений: {len(messages) if messages else 0}")
+                        
+                        # Если нашли сообщения, но не нашли нужное, пробуем следующий формат DIALOG_ID
+                        if messages:
+                            break
+                except Exception as e:
+                    error_str = str(e)
+                    # Если ошибка доступа или диалог не найден, пробуем следующий формат
+                    if "ACCESS_ERROR" in error_str or "DIALOG_ID_EMPTY" in error_str or "404" in error_str:
+                        logger.debug(f"Ошибка доступа или формат DIALOG_ID={dialog_id} не подошел, пробуем следующий")
+                        continue
+                    # Для других ошибок логируем и пробуем следующий формат
+                    logger.debug(f"Ошибка при вызове im.dialog.messages.get с DIALOG_ID={dialog_id}: {e}")
+                    continue
+            
+            return None
+        except Exception as e:
+            logger.debug(f"Ошибка в _try_get_message_method15: {e}")
+            return None
