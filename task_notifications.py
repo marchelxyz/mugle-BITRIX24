@@ -1200,6 +1200,21 @@ class TaskNotificationService:
                 logger.info(f"   Создатель: {created_by_id}, Исполнитель: {responsible_id}, Автор: {author_id}")
                 return
             
+            # Проверяем, является ли комментарий уведомлением о создании задачи
+            # Такие уведомления не нужно отправлять
+            comment_text_to_check = comment_text
+            if not comment_text_to_check and full_comment_info:
+                comment_text_to_check = (
+                    full_comment_info.get('message') or 
+                    full_comment_info.get('MESSAGE') or 
+                    full_comment_info.get('postMessage') or
+                    full_comment_info.get('POST_MESSAGE')
+                )
+            
+            if comment_text_to_check and self._is_task_creation_notification(comment_text_to_check):
+                logger.info(f"⏭️ Пропуск уведомления о комментарии {comment_id_int} к задаче {task_id_int}: это уведомление о создании задачи")
+                return
+            
             # Формируем сообщение в зависимости от типа события
             if 'ONTASKCOMMENTADD' in event_upper:
                 # Если есть текст комментария, добавляем его в сообщение
@@ -1258,6 +1273,46 @@ class TaskNotificationService:
             
         except Exception as e:
             logger.error(f"❌ Ошибка при обработке события комментария {event}: {e}", exc_info=True)
+    
+    def _is_task_creation_notification(self, comment_text: str) -> bool:
+        """
+        Проверка, является ли комментарий уведомлением о создании задачи
+        
+        Bitrix24 автоматически создает комментарии вида:
+        "Мазов Роман создал [URL=/company/personal/user/1665/tasks/task/view/41127/]задачу[/URL]"
+        
+        Такие уведомления не нужно отправлять, так как они являются системными.
+        
+        Args:
+            comment_text: Текст комментария
+            
+        Returns:
+            True если это уведомление о создании задачи, False иначе
+        """
+        if not comment_text:
+            return False
+        
+        comment_text_lower = str(comment_text).lower()
+        
+        # Паттерны для определения уведомления о создании задачи:
+        # 1. "создал [URL=...]задачу[/URL]"
+        # 2. "создал задачу"
+        # 3. "создал[URL=...]задачу[/URL]" (без пробела)
+        # 4. Варианты с разными регистрами
+        
+        patterns = [
+            r'создал\s*\[url=.*?\]задачу\[/url\]',
+            r'создал\s+задачу',
+            r'создал\s*\[url=.*?\]задачу',
+            r'создал.*?задачу',
+        ]
+        
+        for pattern in patterns:
+            if re.search(pattern, comment_text_lower):
+                logger.debug(f"Обнаружено уведомление о создании задачи в тексте: {comment_text[:100]}...")
+                return True
+        
+        return False
     
     def _format_bitrix_text(self, text: str) -> str:
         """
