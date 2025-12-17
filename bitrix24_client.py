@@ -1779,6 +1779,137 @@ class Bitrix24Client:
             logger.error(f"Ошибка при получении задач: {e}", exc_info=True)
             return []
     
+    def get_overdue_tasks(self, exclude_status: List[int] = None) -> List[Dict]:
+        """
+        Получение просроченных задач из Bitrix24
+        
+        Использует несколько стратегий для надежного получения просроченных задач:
+        1. Попытка фильтрации через API с оператором <DEADLINE
+        2. Если не работает, получение всех незавершенных задач и фильтрация в коде
+        
+        Args:
+            exclude_status: Список статусов для исключения (по умолчанию [5] - завершенные)
+            
+        Returns:
+            Список просроченных задач с полями: id, title, deadline, status, responsibleId, createdBy
+        """
+        if exclude_status is None:
+            exclude_status = [5]  # По умолчанию исключаем завершенные задачи
+        
+        now = datetime.now()
+        overdue_tasks = []
+        
+        try:
+            logger.info(f"🔍 Поиск просроченных задач (текущее время: {now})")
+            
+            # Стратегия 1: Попытка фильтрации через API
+            # Пробуем разные форматы даты для совместимости
+            deadline_formats = [
+                now.strftime('%Y-%m-%d %H:%M:%S'),  # С временем
+                now.strftime('%Y-%m-%d'),  # Только дата
+                now.strftime('%Y-%m-%dT%H:%M:%S'),  # ISO формат
+            ]
+            
+            for deadline_format in deadline_formats:
+                try:
+                    filter_params = {
+                        "<DEADLINE": deadline_format
+                    }
+                    
+                    # Добавляем фильтры по статусу
+                    if len(exclude_status) == 1:
+                        filter_params["!STATUS"] = str(exclude_status[0])
+                    elif len(exclude_status) > 1:
+                        # Для нескольких статусов используем фильтр через OR
+                        filter_params["!STATUS"] = exclude_status
+                    
+                    logger.debug(f"   Попытка фильтрации с форматом даты: {deadline_format}")
+                    tasks = self.get_tasks(filter_params=filter_params)
+                    
+                    if tasks:
+                        logger.info(f"✅ Найдено {len(tasks)} просроченных задач через API фильтр (формат: {deadline_format})")
+                        # Дополнительно проверяем в коде, так как API может вернуть лишние задачи
+                        for task in tasks:
+                            if self._is_task_overdue(task, now):
+                                overdue_tasks.append(task)
+                        
+                        if overdue_tasks:
+                            logger.info(f"✅ После проверки в коде: {len(overdue_tasks)} просроченных задач")
+                            return overdue_tasks
+                except Exception as e:
+                    logger.debug(f"   Фильтр с форматом {deadline_format} не сработал: {e}")
+                    continue
+            
+            # Стратегия 2: Получение всех незавершенных задач и фильтрация в коде
+            logger.info("   Использование стратегии 2: получение всех задач и фильтрация в коде")
+            
+            # Получаем все задачи с нужными статусами
+            filter_params = {}
+            if len(exclude_status) == 1:
+                filter_params["!STATUS"] = str(exclude_status[0])
+            elif len(exclude_status) > 1:
+                filter_params["!STATUS"] = exclude_status
+            
+            all_tasks = self.get_tasks(filter_params=filter_params)
+            logger.info(f"   Получено {len(all_tasks)} незавершенных задач")
+            
+            # Фильтруем просроченные задачи
+            for task in all_tasks:
+                if self._is_task_overdue(task, now):
+                    overdue_tasks.append(task)
+            
+            logger.info(f"✅ Найдено {len(overdue_tasks)} просроченных задач")
+            return overdue_tasks
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при получении просроченных задач: {e}", exc_info=True)
+            return []
+    
+    def _is_task_overdue(self, task: Dict, current_time: datetime = None) -> bool:
+        """
+        Проверка, просрочена ли задача
+        
+        Args:
+            task: Данные задачи
+            current_time: Текущее время для сравнения (по умолчанию datetime.now())
+            
+        Returns:
+            True если задача просрочена, False иначе
+        """
+        if current_time is None:
+            current_time = datetime.now()
+        
+        deadline_str = self._get_task_field(task, ['deadline', 'DEADLINE', 'Deadline'])
+        
+        if not deadline_str:
+            return False  # Если нет дедлайна, задача не может быть просрочена
+        
+        try:
+            # Парсим дату дедлайна в разных форматах
+            deadline_dt = None
+            
+            # ISO формат с временной зоной (2024-01-15T18:00:00+03:00 или 2024-01-15T18:00:00Z)
+            if 'T' in deadline_str or 'Z' in deadline_str:
+                deadline_dt = datetime.fromisoformat(deadline_str.replace('Z', '+00:00'))
+                if deadline_dt.tzinfo:
+                    deadline_dt = deadline_dt.replace(tzinfo=None)
+            # Формат YYYY-MM-DD HH:MI:SS
+            elif ' ' in deadline_str:
+                deadline_dt = datetime.strptime(deadline_str, '%Y-%m-%d %H:%M:%S')
+            # Формат YYYY-MM-DD
+            elif len(deadline_str) == 10:
+                deadline_dt = datetime.strptime(deadline_str, '%Y-%m-%d')
+                # Если указана только дата, считаем дедлайн на конец дня
+                deadline_dt = deadline_dt.replace(hour=23, minute=59, second=59)
+            
+            if deadline_dt:
+                return deadline_dt < current_time
+            
+        except Exception as e:
+            logger.debug(f"Ошибка при парсинге дедлайна '{deadline_str}' для задачи {task.get('id')}: {e}")
+        
+        return False
+    
     def _get_task_field(self, task_data: Dict, field_variants: List[str], default=None):
         """
         Безопасное извлечение поля задачи с поддержкой разных форматов (camelCase, UPPERCASE, snake_case)

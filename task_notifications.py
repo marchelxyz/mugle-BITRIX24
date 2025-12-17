@@ -205,71 +205,11 @@ class TaskNotificationService:
         try:
             logger.info("🔍 Проверка просроченных задач...")
             
-            # Получаем все задачи с просроченным дедлайном
-            # Используем фильтр по DEADLINE < текущая дата и STATUS != завершена
-            now = datetime.now()
+            # Используем новый метод get_overdue_tasks для получения просроченных задач
+            # Он автоматически использует несколько стратегий для надежного получения данных
+            tasks = self.bitrix_client.get_overdue_tasks(exclude_status=[5])  # Исключаем завершенные задачи
             
-            # Пробуем разные форматы даты для совместимости с Bitrix24
-            deadline_filter_with_time = now.strftime('%Y-%m-%d %H:%M:%S')
-            deadline_filter_date_only = now.strftime('%Y-%m-%d')
-            
-            logger.info(f"   Текущее время: {now}")
-            logger.info(f"   Фильтр: DEADLINE < {deadline_filter_with_time}, STATUS != 5")
-            
-            # Bitrix24 использует формат фильтров через операторы
-            # Для просроченных задач: DEADLINE < текущая дата и STATUS не равен 5 (завершена)
-            # Пробуем сначала с полным форматом даты и времени
-            tasks = self.bitrix_client.get_tasks(
-                filter_params={
-                    "<DEADLINE": deadline_filter_with_time,
-                    "!STATUS": "5"  # Исключаем завершенные задачи (статус 5 = завершена)
-                }
-            )
-            
-            logger.info(f"   Найдено задач с просроченным дедлайном (фильтр с временем): {len(tasks)}")
-            
-            # Если не найдено задач, пробуем фильтр только по дате (без времени)
-            if len(tasks) == 0:
-                logger.info(f"   Попытка фильтра только по дате: DEADLINE < {deadline_filter_date_only}")
-                tasks = self.bitrix_client.get_tasks(
-                    filter_params={
-                        "<DEADLINE": deadline_filter_date_only,
-                        "!STATUS": "5"
-                    }
-                )
-                logger.info(f"   Найдено задач с просроченным дедлайном (фильтр только по дате): {len(tasks)}")
-            
-            # Если все еще нет задач, получаем все незавершенные задачи и фильтруем в коде
-            if len(tasks) == 0:
-                logger.info("   Получение всех незавершенных задач для фильтрации в коде...")
-                all_tasks = self.bitrix_client.get_tasks(
-                    filter_params={
-                        "!STATUS": "5"
-                    }
-                )
-                logger.info(f"   Получено незавершенных задач: {len(all_tasks)}")
-                
-                # Фильтруем задачи с просроченным дедлайном в коде
-                tasks = []
-                for task in all_tasks:
-                    deadline_str = task.get("deadline")
-                    if deadline_str:
-                        try:
-                            # Парсим дату дедлайна
-                            if 'T' in deadline_str or 'Z' in deadline_str:
-                                deadline_dt = datetime.fromisoformat(deadline_str.replace('Z', '+00:00'))
-                                if deadline_dt.tzinfo:
-                                    deadline_dt = deadline_dt.replace(tzinfo=None)
-                            else:
-                                deadline_dt = datetime.strptime(deadline_str, '%Y-%m-%d %H:%M:%S')
-                            
-                            # Проверяем, просрочена ли задача
-                            if deadline_dt < now:
-                                tasks.append(task)
-                        except Exception as date_error:
-                            logger.debug(f"   Ошибка при парсинге даты дедлайна задачи {task.get('id')}: {date_error}")
-                
-                logger.info(f"   Найдено просроченных задач после фильтрации в коде: {len(tasks)}")
+            logger.info(f"   Найдено просроченных задач: {len(tasks)}")
             
             for task in tasks:
                 task_id = task.get("id")
@@ -795,6 +735,9 @@ class TaskNotificationService:
                 responsible_id = task_data.get('RESPONSIBLE_ID') or task_data.get('responsibleId')
                 created_by_id = task_data.get('CREATED_BY') or task_data.get('createdBy')
             
+            # Инициализируем переменную для проверки просроченности (используется для всех событий)
+            is_overdue = False
+            
             # Проверяем регистрацию через БД (LINK) - только зарегистрированные пользователи
             telegram_ids = []
             
@@ -858,6 +801,21 @@ class TaskNotificationService:
                 else:
                     logger.info(f"   Изменения не обнаружены (возможно, первое обновление или нет значимых изменений)")
                 
+                # ВАЖНО: Проверяем просроченность задачи при любом обновлении
+                # Даже если дедлайн не изменился, задача может быть просрочена
+                deadline_str = None
+                
+                if task_info:
+                    deadline_str = task_info.get('deadline') or task_info.get('DEADLINE')
+                elif fields_after:
+                    deadline_str = fields_after.get('DEADLINE') or fields_after.get('deadline')
+                
+                if deadline_str:
+                    # Проверяем, просрочена ли задача
+                    is_overdue = self.bitrix_client._is_task_overdue(
+                        {'deadline': deadline_str, 'id': task_id_int}
+                    )
+                
                 # Формируем сообщение на основе обнаруженных изменений
                 if task_changes['changes']:
                     # Есть конкретные изменения - формируем детальное сообщение
@@ -865,23 +823,27 @@ class TaskNotificationService:
                     message = f"задача <a href='{task_url}'>«{task_title}»</a>: {changes_text}"
                     
                     # Если дедлайн просрочен, добавляем предупреждение в начало
-                    if task_changes['deadline_overdue']:
+                    if task_changes['deadline_overdue'] or is_overdue:
                         message = f"⚠️ {message}"
                 else:
                     # Нет конкретных изменений или они не определены
-                    # Пробуем определить статус из task_info
-                    status = None
-                    if task_info:
-                        status = task_info.get('status') or task_info.get('STATUS')
-                    elif fields_after:
-                        status = fields_after.get('STATUS') or fields_after.get('status')
-                    
-                    if status:
-                        status_name = self._get_status_name(status)
-                        message = f"задача <a href='{task_url}'>«{task_title}»</a>: статус изменен на \"{status_name}\""
+                    # Если задача просрочена, отправляем уведомление о просрочке
+                    if is_overdue:
+                        message = f"⚠️ задача <a href='{task_url}'>«{task_title}»</a>: дедлайн просрочен"
                     else:
-                        # Если ничего не определено, используем общее сообщение
-                        message = f"задача <a href='{task_url}'>«{task_title}»</a> обновлена"
+                        # Пробуем определить статус из task_info
+                        status = None
+                        if task_info:
+                            status = task_info.get('status') or task_info.get('STATUS')
+                        elif fields_after:
+                            status = fields_after.get('STATUS') or fields_after.get('status')
+                        
+                        if status:
+                            status_name = self._get_status_name(status)
+                            message = f"задача <a href='{task_url}'>«{task_title}»</a>: статус изменен на \"{status_name}\""
+                        else:
+                            # Если ничего не определено, используем общее сообщение
+                            message = f"задача <a href='{task_url}'>«{task_title}»</a> обновлена"
                 
                 notification_type = "task_updated"
             elif 'ONTASKDELETE' in event_upper:
@@ -893,15 +855,33 @@ class TaskNotificationService:
             
             # Проверяем, не отправляли ли уже уведомление для этого события
             notification_key = self._get_notification_key(task_id_int, notification_type, event_upper)
-            if self._was_notification_sent(notification_key):
+            notification_already_sent = self._was_notification_sent(notification_key)
+            
+            # ВАЖНО: Для просроченных задач проверяем отдельный ключ уведомления
+            # Это позволяет отправлять уведомления о просрочке при любом обновлении задачи
+            overdue_notification_key = None
+            overdue_notification_sent = False
+            if 'ONTASKUPDATE' in event_upper and is_overdue:
+                overdue_notification_key = self._get_notification_key(task_id_int, "overdue")
+                overdue_notification_sent = self._was_notification_sent(overdue_notification_key)
+            
+            # Если уведомление об обновлении уже отправлено и уведомление о просрочке тоже отправлено - пропускаем
+            if notification_already_sent and (not is_overdue or overdue_notification_sent):
                 logger.debug(f"Уведомление для события {event} задачи {task_id_int} уже отправлено")
                 return
             
-            # Отправляем уведомление с тегами зарегистрированных пользователей
-            await self._send_notification(message, telegram_ids)
+            # Если задача просрочена, но уведомление о просрочке еще не отправлено
+            # отправляем отдельное уведомление о просрочке (даже если уведомление об обновлении уже было)
+            if is_overdue and not overdue_notification_sent:
+                logger.info(f"⚠️ Задача {task_id_int} просрочена, отправляем уведомление о просрочке")
+                overdue_message = f"⚠️ задача <a href='{task_url}'>«{task_title}»</a>: дедлайн просрочен"
+                await self._send_notification(overdue_message, telegram_ids)
+                self._mark_notification_sent(overdue_notification_key, task_id_int, "overdue")
             
-            # Отмечаем уведомление как отправленное
-            self._mark_notification_sent(notification_key, task_id_int, notification_type, event_upper)
+            # Отправляем уведомление об обновлении только если оно еще не было отправлено
+            if not notification_already_sent:
+                await self._send_notification(message, telegram_ids)
+                self._mark_notification_sent(notification_key, task_id_int, notification_type, event_upper)
             
             # Сохраняем текущее состояние задачи в БД для следующего сравнения
             if DATABASE_AVAILABLE and task_info:
