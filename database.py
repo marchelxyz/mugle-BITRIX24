@@ -162,6 +162,19 @@ def init_database():
                     )
                 """)
                 
+                # Таблица для хранения состояния задач (для определения изменений)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS task_states (
+                        task_id INTEGER PRIMARY KEY,
+                        status VARCHAR(50),
+                        deadline TIMESTAMP,
+                        responsible_id INTEGER,
+                        title VARCHAR(500),
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        state_json JSONB
+                    )
+                """)
+                
                 # Таблица для хранения всех данных исходящих вебхуков от Bitrix24
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS webhook_events (
@@ -196,6 +209,16 @@ def init_database():
                 cur.execute("""
                     CREATE INDEX IF NOT EXISTS idx_task_notifications_task_id 
                     ON task_notifications(task_id)
+                """)
+                
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_task_states_task_id 
+                    ON task_states(task_id)
+                """)
+                
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_task_states_updated_at 
+                    ON task_states(updated_at)
                 """)
                 
                 cur.execute("""
@@ -606,3 +629,74 @@ def get_webhook_events(event: str = None, limit: int = 100, offset: int = 0) -> 
     except Exception as e:
         logger.debug(f"Ошибка при получении истории вебхуков: {e}")
         return []
+
+
+# Функции для работы с состоянием задач
+
+def get_task_state(task_id: int) -> Optional[Dict]:
+    """Получение сохраненного состояния задачи"""
+    if _connection_pool is None:
+        return None
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT * FROM task_states WHERE task_id = %s",
+                    (task_id,)
+                )
+                result = cur.fetchone()
+                if result:
+                    # Преобразуем в обычный dict и извлекаем state_json если есть
+                    state = dict(result)
+                    if state.get('state_json'):
+                        # Объединяем данные из state_json с основными полями
+                        json_data = state.pop('state_json')
+                        if isinstance(json_data, dict):
+                            state.update(json_data)
+                    return state
+                return None
+    except Exception as e:
+        logger.debug(f"Ошибка при получении состояния задачи {task_id}: {e}")
+        return None
+
+
+def save_task_state(task_id: int, task_data: Dict) -> bool:
+    """Сохранение состояния задачи для последующего сравнения"""
+    if _connection_pool is None:
+        return False
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                # Извлекаем ключевые поля
+                status = task_data.get('status') or task_data.get('STATUS')
+                deadline = task_data.get('deadline') or task_data.get('DEADLINE')
+                responsible_id = task_data.get('responsibleId') or task_data.get('RESPONSIBLE_ID')
+                title = task_data.get('title') or task_data.get('TITLE')
+                
+                # Сохраняем полные данные в JSONB
+                cur.execute("""
+                    INSERT INTO task_states (
+                        task_id, status, deadline, responsible_id, title, updated_at, state_json
+                    )
+                    VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP, %s::jsonb)
+                    ON CONFLICT (task_id) 
+                    DO UPDATE SET 
+                        status = EXCLUDED.status,
+                        deadline = EXCLUDED.deadline,
+                        responsible_id = EXCLUDED.responsible_id,
+                        title = EXCLUDED.title,
+                        updated_at = CURRENT_TIMESTAMP,
+                        state_json = EXCLUDED.state_json
+                """, (
+                    task_id,
+                    str(status) if status else None,
+                    deadline,
+                    int(responsible_id) if responsible_id else None,
+                    str(title)[:500] if title else None,
+                    Json(task_data)  # Сохраняем полные данные
+                ))
+                conn.commit()
+                return True
+    except Exception as e:
+        logger.debug(f"Ошибка при сохранении состояния задачи {task_id}: {e}")
+        return False

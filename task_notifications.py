@@ -501,13 +501,17 @@ class TaskNotificationService:
         logger.info("   События комментариев: ONTASKCOMMENTADD, ONTASKCOMMENTUPDATE, ONTASKCOMMENTDELETE")
         return
     
-    def _detect_task_changes(self, fields_before: Optional[Dict], fields_after: Optional[Dict]) -> Dict[str, any]:
+    def _detect_task_changes(self, task_info: Dict, previous_state: Optional[Dict] = None) -> Dict[str, any]:
         """
-        Определение изменений в задаче на основе сравнения FIELDS_BEFORE и FIELDS_AFTER
+        Определение изменений в задаче на основе сравнения текущего состояния с предыдущим
+        
+        ВАЖНО: Bitrix24 исходящий вебхук НЕ передает полные данные задачи в FIELDS_BEFORE/FIELDS_AFTER,
+        там только ID задачи. Поэтому мы сравниваем текущее состояние (из REST API) с предыдущим
+        состоянием, сохраненным в БД.
         
         Args:
-            fields_before: Данные задачи до изменения (из FIELDS_BEFORE)
-            fields_after: Данные задачи после изменения (из FIELDS_AFTER)
+            task_info: Полная информация о задаче из REST API (текущее состояние)
+            previous_state: Предыдущее состояние задачи из БД (опционально)
             
         Returns:
             Словарь с информацией об изменениях:
@@ -541,28 +545,133 @@ class TaskNotificationService:
             'changes': []
         }
         
-        # Если нет данных после изменения, не можем определить изменения
-        if not fields_after:
+        # Нормализуем ключи (Bitrix24 может использовать разные форматы)
+        def get_field(data: Dict, *keys):
+            if not isinstance(data, dict):
+                return None
+            for key in keys:
+                if key in data:
+                    value = data[key]
+                    # Обрабатываем None и пустые строки
+                    if value is not None and value != '':
+                        return value
+            return None
+        
+        # Нормализуем дату для сравнения
+        def normalize_date(date_str):
+            """Нормализует дату для сравнения"""
+            if not date_str:
+                return None
+            try:
+                if isinstance(date_str, str):
+                    # Убираем временную зону и нормализуем формат
+                    date_str_clean = date_str.replace('Z', '').replace('+00:00', '')
+                    if 'T' in date_str_clean:
+                        date_str_clean = date_str_clean.replace('T', ' ')
+                    # Парсим дату
+                    if len(date_str_clean) > 19:
+                        date_str_clean = date_str_clean[:19]
+                    return datetime.strptime(date_str_clean, '%Y-%m-%d %H:%M:%S')
+                return date_str
+            except Exception as e:
+                logger.debug(f"Ошибка при нормализации даты {date_str}: {e}")
+                return date_str
+        
+        # Если нет данных задачи, не можем определить изменения
+        if not task_info:
+            logger.debug("Нет данных task_info для определения изменений")
             return changes
         
-        # Если нет данных до изменения, но есть после - это может быть первое изменение
-        # В этом случае мы можем определить только текущее состояние, но не изменения
-        if not fields_before:
-            # Проверяем, стал ли дедлайн просроченным (даже без сравнения)
-            deadline_after = None
-            for key in ['DEADLINE', 'deadline', 'Deadline']:
-                if key in fields_after:
-                    deadline_after = fields_after[key]
-                    break
+        logger.debug(f"Определение изменений: previous_state={previous_state is not None}, task_info={task_info is not None}")
+        
+        # Получаем значения полей из task_info (текущее состояние)
+        deadline_after = get_field(task_info, 'DEADLINE', 'deadline', 'Deadline')
+        status_after = get_field(task_info, 'STATUS', 'status', 'Status')
+        responsible_after = get_field(task_info, 'RESPONSIBLE_ID', 'responsibleId', 'RESPONSIBLEID', 'responsible_id')
+        title_after = get_field(task_info, 'TITLE', 'title', 'Title')
+        
+        # Если есть предыдущее состояние, сравниваем значения
+        if previous_state:
+            deadline_before = previous_state.get('deadline') or previous_state.get('DEADLINE')
+            status_before = previous_state.get('status') or previous_state.get('STATUS')
+            responsible_before = previous_state.get('responsible_id') or previous_state.get('RESPONSIBLE_ID')
+            title_before = previous_state.get('title') or previous_state.get('TITLE')
             
+            # Проверяем изменение дедлайна (с нормализацией для правильного сравнения)
+            deadline_before_normalized = normalize_date(deadline_before)
+            deadline_after_normalized = normalize_date(deadline_after)
+            
+            if deadline_before_normalized != deadline_after_normalized:
+                changes['deadline_changed'] = True
+                changes['deadline_before'] = deadline_before
+                changes['deadline_after'] = deadline_after
+                
+                # Проверяем, просрочен ли дедлайн
+                if deadline_after:
+                    try:
+                        # Парсим дату дедлайна
+                        if isinstance(deadline_after, str):
+                            if 'T' in deadline_after or 'Z' in deadline_after:
+                                deadline_dt = datetime.fromisoformat(deadline_after.replace('Z', '+00:00'))
+                                if deadline_dt.tzinfo:
+                                    deadline_dt = deadline_dt.replace(tzinfo=None)
+                            else:
+                                deadline_dt = datetime.strptime(deadline_after, '%Y-%m-%d %H:%M:%S')
+                        else:
+                            deadline_dt = deadline_after
+                        
+                        # Если дедлайн просрочен, показываем это, иначе показываем изменение срока
+                        if deadline_dt < datetime.now():
+                            changes['deadline_overdue'] = True
+                            changes['changes'].append('дедлайн просрочен')
+                        else:
+                            # Дедлайн изменен, но не просрочен
+                            changes['changes'].append('изменен срок сдачи')
+                    except Exception as e:
+                        logger.debug(f"Ошибка при парсинге дедлайна {deadline_after}: {e}")
+                        # Если не удалось распарсить, считаем что срок изменен
+                        changes['changes'].append('изменен срок сдачи')
+                elif deadline_before:
+                    # Дедлайн был удален
+                    changes['changes'].append('удален срок сдачи')
+            
+            # Проверяем изменение статуса
+            if str(status_before) != str(status_after) if status_before and status_after else status_before != status_after:
+                changes['status_changed'] = True
+                changes['status_before'] = status_before
+                changes['status_after'] = status_after
+                
+                status_name_after = self._get_status_name(status_after) if status_after else None
+                if status_name_after:
+                    changes['changes'].append(f'статус изменен на "{status_name_after}"')
+                else:
+                    changes['changes'].append('статус изменен')
+            
+            # Проверяем изменение ответственного
+            if str(responsible_before) != str(responsible_after) if responsible_before and responsible_after else responsible_before != responsible_after:
+                changes['responsible_changed'] = True
+                changes['responsible_before'] = str(responsible_before) if responsible_before else None
+                changes['responsible_after'] = str(responsible_after) if responsible_after else None
+                changes['changes'].append('изменен исполнитель')
+            
+            # Проверяем изменение названия
+            if title_before != title_after:
+                changes['title_changed'] = True
+                changes['changes'].append('изменено название')
+        else:
+            # Нет предыдущего состояния - проверяем текущее состояние
+            # Проверяем, просрочен ли дедлайн (даже если он не был изменен)
             if deadline_after:
                 try:
-                    if 'T' in deadline_after or 'Z' in deadline_after:
-                        deadline_dt = datetime.fromisoformat(deadline_after.replace('Z', '+00:00'))
-                        if deadline_dt.tzinfo:
-                            deadline_dt = deadline_dt.replace(tzinfo=None)
+                    if isinstance(deadline_after, str):
+                        if 'T' in deadline_after or 'Z' in deadline_after:
+                            deadline_dt = datetime.fromisoformat(deadline_after.replace('Z', '+00:00'))
+                            if deadline_dt.tzinfo:
+                                deadline_dt = deadline_dt.replace(tzinfo=None)
+                        else:
+                            deadline_dt = datetime.strptime(deadline_after, '%Y-%m-%d %H:%M:%S')
                     else:
-                        deadline_dt = datetime.strptime(deadline_after, '%Y-%m-%d %H:%M:%S')
+                        deadline_dt = deadline_after
                     
                     if deadline_dt < datetime.now():
                         changes['deadline_overdue'] = True
@@ -570,103 +679,28 @@ class TaskNotificationService:
                         changes['changes'].append('дедлайн просрочен')
                 except Exception as e:
                     logger.debug(f"Ошибка при парсинге дедлайна {deadline_after}: {e}")
-            
-            return changes
         
-        # Нормализуем ключи (Bitrix24 может использовать разные форматы)
-        def get_field(data: Dict, *keys):
-            if not isinstance(data, dict):
-                return None
-            for key in keys:
-                if key in data:
-                    return data[key]
-            return None
-        
-        # Проверяем изменение дедлайна
-        deadline_before = get_field(fields_before, 'DEADLINE', 'deadline', 'Deadline')
-        deadline_after = get_field(fields_after, 'DEADLINE', 'deadline', 'Deadline')
-        
-        if deadline_before != deadline_after:
-            changes['deadline_changed'] = True
-            changes['deadline_before'] = deadline_before
-            changes['deadline_after'] = deadline_after
-            
-            # Проверяем, стал ли дедлайн просроченным
-            if deadline_after:
-                try:
-                    # Парсим дату дедлайна
-                    if 'T' in deadline_after or 'Z' in deadline_after:
-                        deadline_dt = datetime.fromisoformat(deadline_after.replace('Z', '+00:00'))
-                        if deadline_dt.tzinfo:
-                            deadline_dt = deadline_dt.replace(tzinfo=None)
-                    else:
-                        deadline_dt = datetime.strptime(deadline_after, '%Y-%m-%d %H:%M:%S')
-                    
-                    if deadline_dt < datetime.now():
-                        changes['deadline_overdue'] = True
-                        changes['changes'].append('дедлайн просрочен')
-                    else:
-                        if deadline_before:
-                            changes['changes'].append('изменен срок сдачи')
-                        else:
-                            changes['changes'].append('установлен срок сдачи')
-                except Exception as e:
-                    logger.debug(f"Ошибка при парсинге дедлайна {deadline_after}: {e}")
-                    changes['changes'].append('изменен срок сдачи')
-        
-        # Проверяем изменение статуса
-        status_before = get_field(fields_before, 'STATUS', 'status', 'Status')
-        status_after = get_field(fields_after, 'STATUS', 'status', 'Status')
-        
-        if status_before != status_after:
-            changes['status_changed'] = True
-            changes['status_before'] = status_before
-            changes['status_after'] = status_after
-            
-            status_name_before = self._get_status_name(status_before) if status_before else None
-            status_name_after = self._get_status_name(status_after) if status_after else None
-            
-            if status_name_after:
-                changes['changes'].append(f'статус изменен на "{status_name_after}"')
-            else:
-                changes['changes'].append('статус изменен')
-        
-        # Проверяем изменение ответственного
-        responsible_before = get_field(fields_before, 'RESPONSIBLE_ID', 'responsibleId', 'RESPONSIBLEID', 'responsible_id')
-        responsible_after = get_field(fields_after, 'RESPONSIBLE_ID', 'responsibleId', 'RESPONSIBLEID', 'responsible_id')
-        
-        if str(responsible_before) != str(responsible_after) if responsible_before and responsible_after else responsible_before != responsible_after:
-            changes['responsible_changed'] = True
-            changes['responsible_before'] = str(responsible_before) if responsible_before else None
-            changes['responsible_after'] = str(responsible_after) if responsible_after else None
-            changes['changes'].append('изменен исполнитель')
-        
-        # Проверяем изменение названия
-        title_before = get_field(fields_before, 'TITLE', 'title', 'Title')
-        title_after = get_field(fields_after, 'TITLE', 'title', 'Title')
-        
-        if title_before != title_after:
-            changes['title_changed'] = True
-            changes['changes'].append('изменено название')
-        
+        logger.debug(f"Обнаруженные изменения: {changes['changes']}")
         return changes
     
     async def handle_task_event(self, event: str, task_data: Dict, auth_data: Dict = None, fields_before: Optional[Dict] = None, fields_after: Optional[Dict] = None):
         """
         Обработка события задачи из вебхука Bitrix24
         
-        Логика:
-        1. Исходящий токен (application_token) отправляет запрос на сервер
-        2. Сервер запрашивает у входящего токена (BITRIX24_WEBHOOK_TOKEN) информацию о задаче
-        3. После получения информации сервер сверяет с БД и отправляет уведомление
-           ТОЛЬКО ЕСЛИ пользователь зарегистрирован через LINK
+        ВАЖНО: Bitrix24 исходящий вебхук НЕ передает полные данные задачи в FIELDS_BEFORE/FIELDS_AFTER,
+        там только ID задачи. Поэтому мы:
+        1. Получаем полную информацию о задаче через REST API (tasks.task.get)
+        2. Получаем предыдущее состояние задачи из БД
+        3. Сравниваем текущее состояние с предыдущим для определения изменений
+        4. Сохраняем текущее состояние в БД для следующего сравнения
+        5. Отправляем уведомление ТОЛЬКО ЕСЛИ пользователь зарегистрирован через LINK
         
         Args:
             event: Тип события (ONTASKADD, ONTASKUPDATE, ONTASKDELETE)
-            task_data: Данные задачи из вебхука (обычно FIELDS_AFTER)
+            task_data: Данные задачи из вебхука (обычно FIELDS_AFTER, содержит только ID)
             auth_data: Данные авторизации из вебхука (опционально)
-            fields_before: Данные задачи до изменения (FIELDS_BEFORE) - опционально
-            fields_after: Данные задачи после изменения (FIELDS_AFTER) - опционально
+            fields_before: Данные задачи до изменения (FIELDS_BEFORE) - НЕ ИСПОЛЬЗУЕТСЯ (только ID)
+            fields_after: Данные задачи после изменения (FIELDS_AFTER) - НЕ ИСПОЛЬЗУЕТСЯ (только ID)
         """
         try:
             task_id = task_data.get('ID') or task_data.get('id')
@@ -691,9 +725,27 @@ class TaskNotificationService:
                     if not task_info:
                         logger.warning(f"⚠️ Не удалось получить информацию о задаче {task_id_int} через REST API")
                         return
+                    logger.debug(f"Получена информация о задаче {task_id_int}: deadline={task_info.get('deadline')}, status={task_info.get('status')}")
                 except Exception as e:
                     logger.warning(f"⚠️ Ошибка при получении задачи {task_id_int} через REST API: {e}")
                     return
+            
+            # Получаем предыдущее состояние задачи из БД
+            previous_state = None
+            if DATABASE_AVAILABLE and task_info:
+                try:
+                    previous_state = database.get_task_state(task_id_int)
+                    if previous_state:
+                        logger.debug(f"Получено предыдущее состояние задачи {task_id_int} из БД")
+                    else:
+                        logger.debug(f"Предыдущее состояние задачи {task_id_int} не найдено в БД (первое обновление)")
+                except Exception as e:
+                    logger.debug(f"Ошибка при получении предыдущего состояния задачи {task_id_int}: {e}")
+            
+            # Логируем данные для отладки
+            logger.debug(f"Данные для определения изменений задачи {task_id_int}:")
+            logger.debug(f"  previous_state: {previous_state is not None}")
+            logger.debug(f"  task_info: deadline={task_info.get('deadline') if task_info else None}, status={task_info.get('status') if task_info else None}")
             
             # Получаем название задачи и ответственных
             if task_info:
@@ -752,8 +804,10 @@ class TaskNotificationService:
             
             # Формируем сообщение в зависимости от типа события
             if 'ONTASKUPDATE' in event_upper:
-                # Определяем изменения через сравнение FIELDS_BEFORE и FIELDS_AFTER
-                task_changes = self._detect_task_changes(fields_before, fields_after if fields_after else task_data)
+                # Определяем изменения через сравнение текущего состояния с предыдущим из БД
+                task_changes = self._detect_task_changes(task_info, previous_state)
+                
+                logger.debug(f"Результат определения изменений для задачи {task_id_int}: {task_changes}")
                 
                 # Формируем сообщение на основе обнаруженных изменений
                 if task_changes['changes']:
@@ -761,16 +815,23 @@ class TaskNotificationService:
                     changes_text = ", ".join(task_changes['changes'])
                     message = f"задача <a href='{task_url}'>«{task_title}»</a>: {changes_text}"
                     
-                    # Если дедлайн просрочен, добавляем предупреждение
+                    # Если дедлайн просрочен, добавляем предупреждение в начало
                     if task_changes['deadline_overdue']:
                         message = f"⚠️ {message}"
                 else:
-                    # Нет конкретных изменений или они не определены - используем общее сообщение
-                    status = task_info.get('status') if task_info else None
-                    status_name = self._get_status_name(status) if status else None
-                    if status_name:
-                        message = f"задача <a href='{task_url}'>«{task_title}»</a> изменена: статус — {status_name}"
+                    # Нет конкретных изменений или они не определены
+                    # Пробуем определить статус из task_info
+                    status = None
+                    if task_info:
+                        status = task_info.get('status') or task_info.get('STATUS')
+                    elif fields_after:
+                        status = fields_after.get('STATUS') or fields_after.get('status')
+                    
+                    if status:
+                        status_name = self._get_status_name(status)
+                        message = f"задача <a href='{task_url}'>«{task_title}»</a>: статус изменен на \"{status_name}\""
                     else:
+                        # Если ничего не определено, используем общее сообщение
                         message = f"задача <a href='{task_url}'>«{task_title}»</a> обновлена"
                 
                 notification_type = "task_updated"
@@ -792,6 +853,14 @@ class TaskNotificationService:
             
             # Отмечаем уведомление как отправленное
             self._mark_notification_sent(notification_key, task_id_int, notification_type, event_upper)
+            
+            # Сохраняем текущее состояние задачи в БД для следующего сравнения
+            if DATABASE_AVAILABLE and task_info:
+                try:
+                    database.save_task_state(task_id_int, task_info)
+                    logger.debug(f"Сохранено состояние задачи {task_id_int} в БД")
+                except Exception as e:
+                    logger.debug(f"Ошибка при сохранении состояния задачи {task_id_int}: {e}")
             
             logger.info(f"✅ Отправлено уведомление о событии {event} для задачи {task_id_int} (уведомлены: {len(telegram_ids)} пользователей)")
             
