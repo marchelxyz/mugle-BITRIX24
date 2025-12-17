@@ -501,7 +501,157 @@ class TaskNotificationService:
         logger.info("   События комментариев: ONTASKCOMMENTADD, ONTASKCOMMENTUPDATE, ONTASKCOMMENTDELETE")
         return
     
-    async def handle_task_event(self, event: str, task_data: Dict, auth_data: Dict = None):
+    def _detect_task_changes(self, fields_before: Optional[Dict], fields_after: Optional[Dict]) -> Dict[str, any]:
+        """
+        Определение изменений в задаче на основе сравнения FIELDS_BEFORE и FIELDS_AFTER
+        
+        Args:
+            fields_before: Данные задачи до изменения (из FIELDS_BEFORE)
+            fields_after: Данные задачи после изменения (из FIELDS_AFTER)
+            
+        Returns:
+            Словарь с информацией об изменениях:
+            {
+                'deadline_changed': bool,
+                'deadline_before': str или None,
+                'deadline_after': str или None,
+                'deadline_overdue': bool,  # Стал ли дедлайн просроченным
+                'status_changed': bool,
+                'status_before': str или None,
+                'status_after': str или None,
+                'responsible_changed': bool,
+                'responsible_before': str или None,
+                'responsible_after': str или None,
+                'title_changed': bool,
+                'changes': List[str]  # Список описаний изменений
+            }
+        """
+        changes = {
+            'deadline_changed': False,
+            'deadline_before': None,
+            'deadline_after': None,
+            'deadline_overdue': False,
+            'status_changed': False,
+            'status_before': None,
+            'status_after': None,
+            'responsible_changed': False,
+            'responsible_before': None,
+            'responsible_after': None,
+            'title_changed': False,
+            'changes': []
+        }
+        
+        # Если нет данных после изменения, не можем определить изменения
+        if not fields_after:
+            return changes
+        
+        # Если нет данных до изменения, но есть после - это может быть первое изменение
+        # В этом случае мы можем определить только текущее состояние, но не изменения
+        if not fields_before:
+            # Проверяем, стал ли дедлайн просроченным (даже без сравнения)
+            deadline_after = None
+            for key in ['DEADLINE', 'deadline', 'Deadline']:
+                if key in fields_after:
+                    deadline_after = fields_after[key]
+                    break
+            
+            if deadline_after:
+                try:
+                    if 'T' in deadline_after or 'Z' in deadline_after:
+                        deadline_dt = datetime.fromisoformat(deadline_after.replace('Z', '+00:00'))
+                        if deadline_dt.tzinfo:
+                            deadline_dt = deadline_dt.replace(tzinfo=None)
+                    else:
+                        deadline_dt = datetime.strptime(deadline_after, '%Y-%m-%d %H:%M:%S')
+                    
+                    if deadline_dt < datetime.now():
+                        changes['deadline_overdue'] = True
+                        changes['deadline_after'] = deadline_after
+                        changes['changes'].append('дедлайн просрочен')
+                except Exception as e:
+                    logger.debug(f"Ошибка при парсинге дедлайна {deadline_after}: {e}")
+            
+            return changes
+        
+        # Нормализуем ключи (Bitrix24 может использовать разные форматы)
+        def get_field(data: Dict, *keys):
+            if not isinstance(data, dict):
+                return None
+            for key in keys:
+                if key in data:
+                    return data[key]
+            return None
+        
+        # Проверяем изменение дедлайна
+        deadline_before = get_field(fields_before, 'DEADLINE', 'deadline', 'Deadline')
+        deadline_after = get_field(fields_after, 'DEADLINE', 'deadline', 'Deadline')
+        
+        if deadline_before != deadline_after:
+            changes['deadline_changed'] = True
+            changes['deadline_before'] = deadline_before
+            changes['deadline_after'] = deadline_after
+            
+            # Проверяем, стал ли дедлайн просроченным
+            if deadline_after:
+                try:
+                    # Парсим дату дедлайна
+                    if 'T' in deadline_after or 'Z' in deadline_after:
+                        deadline_dt = datetime.fromisoformat(deadline_after.replace('Z', '+00:00'))
+                        if deadline_dt.tzinfo:
+                            deadline_dt = deadline_dt.replace(tzinfo=None)
+                    else:
+                        deadline_dt = datetime.strptime(deadline_after, '%Y-%m-%d %H:%M:%S')
+                    
+                    if deadline_dt < datetime.now():
+                        changes['deadline_overdue'] = True
+                        changes['changes'].append('дедлайн просрочен')
+                    else:
+                        if deadline_before:
+                            changes['changes'].append('изменен срок сдачи')
+                        else:
+                            changes['changes'].append('установлен срок сдачи')
+                except Exception as e:
+                    logger.debug(f"Ошибка при парсинге дедлайна {deadline_after}: {e}")
+                    changes['changes'].append('изменен срок сдачи')
+        
+        # Проверяем изменение статуса
+        status_before = get_field(fields_before, 'STATUS', 'status', 'Status')
+        status_after = get_field(fields_after, 'STATUS', 'status', 'Status')
+        
+        if status_before != status_after:
+            changes['status_changed'] = True
+            changes['status_before'] = status_before
+            changes['status_after'] = status_after
+            
+            status_name_before = self._get_status_name(status_before) if status_before else None
+            status_name_after = self._get_status_name(status_after) if status_after else None
+            
+            if status_name_after:
+                changes['changes'].append(f'статус изменен на "{status_name_after}"')
+            else:
+                changes['changes'].append('статус изменен')
+        
+        # Проверяем изменение ответственного
+        responsible_before = get_field(fields_before, 'RESPONSIBLE_ID', 'responsibleId', 'RESPONSIBLEID', 'responsible_id')
+        responsible_after = get_field(fields_after, 'RESPONSIBLE_ID', 'responsibleId', 'RESPONSIBLEID', 'responsible_id')
+        
+        if str(responsible_before) != str(responsible_after) if responsible_before and responsible_after else responsible_before != responsible_after:
+            changes['responsible_changed'] = True
+            changes['responsible_before'] = str(responsible_before) if responsible_before else None
+            changes['responsible_after'] = str(responsible_after) if responsible_after else None
+            changes['changes'].append('изменен исполнитель')
+        
+        # Проверяем изменение названия
+        title_before = get_field(fields_before, 'TITLE', 'title', 'Title')
+        title_after = get_field(fields_after, 'TITLE', 'title', 'Title')
+        
+        if title_before != title_after:
+            changes['title_changed'] = True
+            changes['changes'].append('изменено название')
+        
+        return changes
+    
+    async def handle_task_event(self, event: str, task_data: Dict, auth_data: Dict = None, fields_before: Optional[Dict] = None, fields_after: Optional[Dict] = None):
         """
         Обработка события задачи из вебхука Bitrix24
         
@@ -513,8 +663,10 @@ class TaskNotificationService:
         
         Args:
             event: Тип события (ONTASKADD, ONTASKUPDATE, ONTASKDELETE)
-            task_data: Данные задачи из вебхука
+            task_data: Данные задачи из вебхука (обычно FIELDS_AFTER)
             auth_data: Данные авторизации из вебхука (опционально)
+            fields_before: Данные задачи до изменения (FIELDS_BEFORE) - опционально
+            fields_after: Данные задачи после изменения (FIELDS_AFTER) - опционально
         """
         try:
             task_id = task_data.get('ID') or task_data.get('id')
@@ -600,12 +752,27 @@ class TaskNotificationService:
             
             # Формируем сообщение в зависимости от типа события
             if 'ONTASKUPDATE' in event_upper:
-                status = task_info.get('status') if task_info else None
-                status_name = self._get_status_name(status) if status else None
-                if status_name:
-                    message = f"задача <a href='{task_url}'>«{task_title}»</a> изменена: статус — {status_name}"
+                # Определяем изменения через сравнение FIELDS_BEFORE и FIELDS_AFTER
+                task_changes = self._detect_task_changes(fields_before, fields_after if fields_after else task_data)
+                
+                # Формируем сообщение на основе обнаруженных изменений
+                if task_changes['changes']:
+                    # Есть конкретные изменения - формируем детальное сообщение
+                    changes_text = ", ".join(task_changes['changes'])
+                    message = f"задача <a href='{task_url}'>«{task_title}»</a>: {changes_text}"
+                    
+                    # Если дедлайн просрочен, добавляем предупреждение
+                    if task_changes['deadline_overdue']:
+                        message = f"⚠️ {message}"
                 else:
-                    message = f"задача <a href='{task_url}'>«{task_title}»</a> обновлена"
+                    # Нет конкретных изменений или они не определены - используем общее сообщение
+                    status = task_info.get('status') if task_info else None
+                    status_name = self._get_status_name(status) if status else None
+                    if status_name:
+                        message = f"задача <a href='{task_url}'>«{task_title}»</a> изменена: статус — {status_name}"
+                    else:
+                        message = f"задача <a href='{task_url}'>«{task_title}»</a> обновлена"
+                
                 notification_type = "task_updated"
             elif 'ONTASKDELETE' in event_upper:
                 message = f"задача «{task_title}» удалена"
