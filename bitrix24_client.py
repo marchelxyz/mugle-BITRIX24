@@ -2312,6 +2312,13 @@ class Bitrix24Client:
             'func': lambda: self._try_get_message_method14(task_id, message_id)
         })
         
+        # Метод 15: im.dialog.messages.get (новый метод из документации Bitrix24)
+        if chat_id:
+            methods.append({
+                'name': 'Метод 15: im.dialog.messages.get (новый API)',
+                'func': lambda: self._try_get_message_method15(chat_id, message_id)
+            })
+        
         # Пробуем все методы по очереди
         for method_info in methods:
             try:
@@ -2800,4 +2807,190 @@ class Bitrix24Client:
             return None
         except Exception as e:
             logger.debug(f"Ошибка в _try_get_message_method14: {e}")
+            return None
+    
+    def _try_get_message_method15(self, chat_id: int, message_id: int) -> Optional[Dict]:
+        """
+        Метод 15: im.dialog.messages.get (новый метод из документации Bitrix24)
+        
+        Получает список последних сообщений в чате и ищет нужное сообщение по ID.
+        
+        Согласно документации:
+        - DIALOG_ID может быть в формате 'chat{chat_id}' или просто '{chat_id}'
+        - Если не переданы LAST_ID и FIRST_ID, будут загружены последние 20 сообщений
+        - Для загрузки предыдущих сообщений используется LAST_ID
+        - Для загрузки следующих сообщений используется FIRST_ID
+        
+        Параметры:
+        - chat_id: ID чата задачи
+        - message_id: ID сообщения (комментария), которое нужно найти
+        """
+        try:
+            # Пробуем разные форматы DIALOG_ID
+            dialog_id_variants = [
+                f"chat{chat_id}",  # Формат chat29
+                str(chat_id),      # Формат 29
+                chat_id            # Числовой формат
+            ]
+            
+            for dialog_id in dialog_id_variants:
+                try:
+                    # Сначала пробуем получить последние сообщения (без фильтров)
+                    logger.debug(f"Попытка получить сообщения через im.dialog.messages.get с DIALOG_ID={dialog_id}")
+                    result = self._make_request("im.dialog.messages.get", {
+                        "DIALOG_ID": dialog_id,
+                        "LIMIT": 100  # Увеличиваем лимит для поиска нужного сообщения
+                    })
+                    
+                    if result and result.get("result"):
+                        result_data = result["result"]
+                        
+                        # Извлекаем массив сообщений
+                        messages = None
+                        if isinstance(result_data, dict):
+                            messages = result_data.get("messages") or result_data.get("MESSAGES")
+                        elif isinstance(result_data, list):
+                            messages = result_data
+                        
+                        if messages and isinstance(messages, list):
+                            # Ищем нужное сообщение по ID
+                            for msg in messages:
+                                msg_id = msg.get("id") or msg.get("ID")
+                                if msg_id and str(msg_id) == str(message_id):
+                                    # Нашли нужное сообщение
+                                    message_text = (
+                                        msg.get("text") or
+                                        msg.get("TEXT") or
+                                        msg.get("message") or
+                                        msg.get("MESSAGE")
+                                    )
+                                    
+                                    if message_text:
+                                        return {
+                                            "message": message_text,
+                                            "authorId": msg.get("author_id") or msg.get("AUTHOR_ID"),
+                                            "id": message_id,
+                                            "date": msg.get("date") or msg.get("DATE")
+                                        }
+                            
+                            # Если не нашли в первых 100 сообщениях, пробуем загрузить предыдущие
+                            # Используем LAST_ID с минимальным ID из полученных сообщений
+                            if len(messages) > 0:
+                                min_id = None
+                                for msg in messages:
+                                    msg_id = msg.get("id") or msg.get("ID")
+                                    if msg_id:
+                                        msg_id_int = int(msg_id)
+                                        if min_id is None or msg_id_int < min_id:
+                                            min_id = msg_id_int
+                                
+                                # Если нужное сообщение имеет больший ID, чем минимальный в выборке,
+                                # значит оно в более старых сообщениях - пробуем загрузить их
+                                if min_id and int(message_id) < min_id:
+                                    logger.debug(f"Сообщение {message_id} не найдено в первых 100, пробуем загрузить предыдущие (LAST_ID={min_id})")
+                                    
+                                    # Загружаем предыдущие сообщения
+                                    prev_result = self._make_request("im.dialog.messages.get", {
+                                        "DIALOG_ID": dialog_id,
+                                        "LAST_ID": min_id,
+                                        "LIMIT": 100
+                                    })
+                                    
+                                    if prev_result and prev_result.get("result"):
+                                        prev_data = prev_result["result"]
+                                        prev_messages = None
+                                        if isinstance(prev_data, dict):
+                                            prev_messages = prev_data.get("messages") or prev_data.get("MESSAGES")
+                                        elif isinstance(prev_data, list):
+                                            prev_messages = prev_data
+                                        
+                                        if prev_messages:
+                                            # Ищем в предыдущих сообщениях
+                                            for msg in prev_messages:
+                                                msg_id = msg.get("id") or msg.get("ID")
+                                                if msg_id and str(msg_id) == str(message_id):
+                                                    message_text = (
+                                                        msg.get("text") or
+                                                        msg.get("TEXT") or
+                                                        msg.get("message") or
+                                                        msg.get("MESSAGE")
+                                                    )
+                                                    
+                                                    if message_text:
+                                                        return {
+                                                            "message": message_text,
+                                                            "authorId": msg.get("author_id") or msg.get("AUTHOR_ID"),
+                                                            "id": message_id,
+                                                            "date": msg.get("date") or msg.get("DATE")
+                                                        }
+                                
+                                # Если нужное сообщение имеет больший ID, чем максимальный в выборке,
+                                # значит оно в более новых сообщениях - пробуем загрузить их
+                                else:
+                                    max_id = None
+                                    for msg in messages:
+                                        msg_id = msg.get("id") or msg.get("ID")
+                                        if msg_id:
+                                            msg_id_int = int(msg_id)
+                                            if max_id is None or msg_id_int > max_id:
+                                                max_id = msg_id_int
+                                    
+                                    if max_id and int(message_id) > max_id:
+                                        logger.debug(f"Сообщение {message_id} не найдено в первых 100, пробуем загрузить следующие (FIRST_ID={max_id})")
+                                        
+                                        # Загружаем следующие сообщения
+                                        next_result = self._make_request("im.dialog.messages.get", {
+                                            "DIALOG_ID": dialog_id,
+                                            "FIRST_ID": max_id,
+                                            "LIMIT": 100
+                                        })
+                                        
+                                        if next_result and next_result.get("result"):
+                                            next_data = next_result["result"]
+                                            next_messages = None
+                                            if isinstance(next_data, dict):
+                                                next_messages = next_data.get("messages") or next_data.get("MESSAGES")
+                                            elif isinstance(next_data, list):
+                                                next_messages = next_data
+                                            
+                                            if next_messages:
+                                                # Ищем в следующих сообщениях
+                                                for msg in next_messages:
+                                                    msg_id = msg.get("id") or msg.get("ID")
+                                                    if msg_id and str(msg_id) == str(message_id):
+                                                        message_text = (
+                                                            msg.get("text") or
+                                                            msg.get("TEXT") or
+                                                            msg.get("message") or
+                                                            msg.get("MESSAGE")
+                                                        )
+                                                        
+                                                        if message_text:
+                                                            return {
+                                                                "message": message_text,
+                                                                "authorId": msg.get("author_id") or msg.get("AUTHOR_ID"),
+                                                                "id": message_id,
+                                                                "date": msg.get("date") or msg.get("DATE")
+                                                            }
+                        
+                        logger.debug(f"Метод im.dialog.messages.get вернул результат, но сообщение {message_id} не найдено")
+                        logger.debug(f"   Структура результата: {type(result_data)}, ключи: {list(result_data.keys()) if isinstance(result_data, dict) else 'N/A'}")
+                        logger.debug(f"   Количество сообщений: {len(messages) if messages else 0}")
+                        
+                        # Если нашли сообщения, но не нашли нужное, пробуем следующий формат DIALOG_ID
+                        if messages:
+                            break
+                except Exception as e:
+                    error_str = str(e)
+                    # Если ошибка доступа или диалог не найден, пробуем следующий формат
+                    if "ACCESS_ERROR" in error_str or "DIALOG_ID_EMPTY" in error_str or "404" in error_str:
+                        logger.debug(f"Ошибка доступа или формат DIALOG_ID={dialog_id} не подошел, пробуем следующий")
+                        continue
+                    # Для других ошибок логируем и пробуем следующий формат
+                    logger.debug(f"Ошибка при вызове im.dialog.messages.get с DIALOG_ID={dialog_id}: {e}")
+                    continue
+            
+            return None
+        except Exception as e:
+            logger.debug(f"Ошибка в _try_get_message_method15: {e}")
             return None
