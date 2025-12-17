@@ -775,6 +775,246 @@ async def departments_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
 
 
+async def webhooks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для просмотра последних вебхуков от Bitrix24"""
+    if not DATABASE_AVAILABLE:
+        await update.message.reply_text(
+            "❌ База данных недоступна. Просмотр вебхуков невозможен.\n\n"
+            "💡 Для работы этой функции требуется PostgreSQL база данных."
+        )
+        return
+    
+    try:
+        # Получаем параметры из команды (опционально: тип события и лимит)
+        args = context.args if context.args else []
+        
+        event_filter = None
+        limit = 10
+        
+        if args:
+            # Первый аргумент может быть типом события или лимитом
+            if args[0].upper().startswith('ONTASK') or args[0].upper().startswith('ONUSER'):
+                event_filter = args[0].upper()
+                if len(args) > 1:
+                    try:
+                        limit = int(args[1])
+                        limit = min(limit, 50)  # Максимум 50
+                    except ValueError:
+                        pass
+            else:
+                try:
+                    limit = int(args[0])
+                    limit = min(limit, 50)  # Максимум 50
+                except ValueError:
+                    pass
+        
+        # Получаем вебхуки из базы данных
+        webhooks = database.get_webhook_events(event=event_filter, limit=limit)
+        
+        if not webhooks:
+            filter_text = f" типа {event_filter}" if event_filter else ""
+            await update.message.reply_text(
+                f"ℹ️ Не найдено вебхуков{filter_text}.\n\n"
+                f"💡 Используйте:\n"
+                f"• `/webhooks` - последние 10 вебхуков\n"
+                f"• `/webhooks ONTASKUPDATE` - вебхуки типа ONTASKUPDATE\n"
+                f"• `/webhooks 20` - последние 20 вебхуков\n"
+                f"• `/webhook <id>` - детальная информация о вебхуке",
+                parse_mode='Markdown'
+            )
+            return
+        
+        # Формируем список вебхуков
+        response_text = f"📦 **Последние {len(webhooks)} вебхуков"
+        if event_filter:
+            response_text += f" (тип: {event_filter})"
+        response_text += ":**\n\n"
+        
+        for i, webhook in enumerate(webhooks, 1):
+            webhook_id = webhook.get('id')
+            event = webhook.get('event', 'N/A')
+            received_at = webhook.get('received_at')
+            event_handler_id = webhook.get('event_handler_id')
+            
+            # Форматируем время
+            if received_at:
+                if isinstance(received_at, str):
+                    time_str = received_at[:19]  # Обрезаем до секунд
+                else:
+                    time_str = str(received_at)[:19]
+            else:
+                time_str = "N/A"
+            
+            response_text += f"{i}. **{event}**\n"
+            response_text += f"   ID: `{webhook_id}`\n"
+            response_text += f"   Время: {time_str}\n"
+            if event_handler_id:
+                response_text += f"   Handler ID: `{event_handler_id}`\n"
+            response_text += "\n"
+        
+        response_text += f"\n💡 Используйте `/webhook <id>` для просмотра детальной информации"
+        
+        await update.message.reply_text(response_text, parse_mode='Markdown')
+        
+    except Exception as e:
+        logger.error(f"Ошибка при получении списка вебхуков: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Ошибка при получении списка вебхуков: {e}")
+
+
+async def webhook_detail_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для просмотра детальной информации о конкретном вебхуке"""
+    if not DATABASE_AVAILABLE:
+        await update.message.reply_text(
+            "❌ База данных недоступна. Просмотр вебхуков невозможен.\n\n"
+            "💡 Для работы этой функции требуется PostgreSQL база данных."
+        )
+        return
+    
+    try:
+        args = context.args if context.args else []
+        
+        if not args:
+            await update.message.reply_text(
+                "❌ Укажите ID вебхука.\n\n"
+                "Использование: `/webhook <id>`\n\n"
+                "Пример: `/webhook 123`\n\n"
+                "💡 Используйте `/webhooks` для просмотра списка последних вебхуков",
+                parse_mode='Markdown'
+            )
+            return
+        
+        try:
+            webhook_id = int(args[0])
+        except ValueError:
+            await update.message.reply_text(
+                "❌ Неверный формат ID. ID должен быть числом.\n\n"
+                "Пример: `/webhook 123`",
+                parse_mode='Markdown'
+            )
+            return
+        
+        # Получаем все вебхуки и ищем нужный
+        webhooks = database.get_webhook_events(limit=1000)  # Получаем больше для поиска
+        webhook = next((w for w in webhooks if w.get('id') == webhook_id), None)
+        
+        if not webhook:
+            await update.message.reply_text(
+                f"❌ Вебхук с ID `{webhook_id}` не найден.\n\n"
+                f"💡 Используйте `/webhooks` для просмотра списка доступных вебхуков",
+                parse_mode='Markdown'
+            )
+            return
+        
+        # Формируем детальную информацию
+        import json
+        
+        event = webhook.get('event', 'N/A')
+        event_handler_id = webhook.get('event_handler_id')
+        received_at = webhook.get('received_at')
+        ts = webhook.get('ts')
+        data_json = webhook.get('data_json', {})
+        auth_domain = webhook.get('auth_domain')
+        auth_member_id = webhook.get('auth_member_id')
+        
+        response_text = f"📦 **Вебхук #{webhook_id}**\n\n"
+        response_text += f"**Тип события:** `{event}`\n"
+        
+        if event_handler_id:
+            response_text += f"**Handler ID:** `{event_handler_id}`\n"
+        
+        if received_at:
+            if isinstance(received_at, str):
+                time_str = received_at
+            else:
+                time_str = str(received_at)
+            response_text += f"**Получен:** {time_str}\n"
+        
+        if ts:
+            response_text += f"**Timestamp:** `{ts}`\n"
+        
+        if auth_domain:
+            response_text += f"**Домен:** `{auth_domain}`\n"
+        
+        if auth_member_id:
+            response_text += f"**Member ID:** `{auth_member_id}`\n"
+        
+        response_text += "\n**Данные вебхука:**\n"
+        
+        # Форматируем JSON данные
+        try:
+            if isinstance(data_json, dict):
+                # Извлекаем важные поля для краткого отображения
+                data_obj = data_json.get('data', {})
+                auth_data = data_json.get('auth', {})
+                
+                if isinstance(data_obj, dict):
+                    # Проверяем FIELDS_AFTER и FIELDS_BEFORE
+                    if 'FIELDS_AFTER' in data_obj:
+                        fields_after = data_obj['FIELDS_AFTER']
+                        if isinstance(fields_after, dict):
+                            response_text += "\n**FIELDS_AFTER:**\n"
+                            # Показываем ключевые поля
+                            if 'ID' in fields_after:
+                                response_text += f"  ID: `{fields_after['ID']}`\n"
+                            if 'TASK_ID' in fields_after:
+                                response_text += f"  TASK_ID: `{fields_after['TASK_ID']}`\n"
+                            if 'TITLE' in fields_after:
+                                title = fields_after['TITLE']
+                                if len(title) > 50:
+                                    title = title[:47] + "..."
+                                response_text += f"  TITLE: {title}\n"
+                            if 'CREATED_BY' in fields_after:
+                                response_text += f"  CREATED_BY: `{fields_after['CREATED_BY']}`\n"
+                            if 'RESPONSIBLE_ID' in fields_after:
+                                response_text += f"  RESPONSIBLE_ID: `{fields_after['RESPONSIBLE_ID']}`\n"
+                            if 'AUTHOR_ID' in fields_after:
+                                response_text += f"  AUTHOR_ID: `{fields_after['AUTHOR_ID']}`\n"
+                            
+                            # Показываем количество всех полей
+                            total_fields = len(fields_after)
+                            shown_fields = sum(1 for k in ['ID', 'TASK_ID', 'TITLE', 'CREATED_BY', 'RESPONSIBLE_ID', 'AUTHOR_ID'] if k in fields_after)
+                            if total_fields > shown_fields:
+                                response_text += f"  ... и еще {total_fields - shown_fields} полей\n"
+                    
+                    if 'FIELDS_BEFORE' in data_obj and data_obj['FIELDS_BEFORE']:
+                        fields_before = data_obj['FIELDS_BEFORE']
+                        if isinstance(fields_before, dict):
+                            response_text += "\n**FIELDS_BEFORE:**\n"
+                            if 'ID' in fields_before:
+                                response_text += f"  ID: `{fields_before['ID']}`\n"
+                            if 'TITLE' in fields_before:
+                                title = fields_before['TITLE']
+                                if len(title) > 50:
+                                    title = title[:47] + "..."
+                                response_text += f"  TITLE: {title}\n"
+                
+                # Полный JSON (ограниченный размер)
+                json_str = json.dumps(data_json, ensure_ascii=False, indent=2)
+                if len(json_str) > 3000:
+                    json_str = json_str[:3000] + "\n... (данные обрезаны)"
+                
+                response_text += f"\n**Полный JSON:**\n```json\n{json_str}\n```"
+            else:
+                response_text += f"```json\n{json.dumps(data_json, ensure_ascii=False, indent=2)}\n```"
+        except Exception as json_err:
+            response_text += f"\n❌ Ошибка при форматировании JSON: {json_err}\n"
+            response_text += f"Данные: `{str(data_json)[:500]}`"
+        
+        # Отправляем сообщение (может быть длинным, Telegram ограничивает до 4096 символов)
+        if len(response_text) > 4000:
+            # Разбиваем на части
+            part1 = response_text[:4000]
+            part2 = response_text[4000:]
+            await update.message.reply_text(part1, parse_mode='Markdown')
+            await update.message.reply_text(f"```json\n{part2}\n```", parse_mode='Markdown')
+        else:
+            await update.message.reply_text(response_text, parse_mode='Markdown')
+        
+    except Exception as e:
+        logger.error(f"Ошибка при получении детальной информации о вебхуке: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Ошибка при получении информации о вебхуке: {e}")
+
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /help"""
     await update.message.reply_text(
@@ -793,7 +1033,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/link_username @username bitrix_id - Связать Telegram username с пользователем Битрикс24\n"
         "/departments - Показать список всех подразделений из Bitrix24\n"
         "/group_info - Показать информацию о Telegram супергруппе и разделах (threads)\n"
-        "/departments - Показать список всех подразделений из Bitrix24\n"
+        "/webhooks [тип] [лимит] - Показать последние вебхуки от Bitrix24\n"
+        "  Примеры: /webhooks, /webhooks ONTASKUPDATE, /webhooks 20\n"
+        "/webhook <id> - Показать детальную информацию о вебхуке\n"
         "/cancel - Отменить создание задачи\n\n"
         "💡 После команды /link бот автоматически определяет ваш аккаунт "
         "по Telegram ID из Bitrix24!"
@@ -1678,6 +1920,7 @@ async def setup_bot_commands(application: Application):
             BotCommand("start", "Начать работу с ботом"),
             BotCommand("create", "Создать задачу в Битрикс24"),
             BotCommand("help", "Показать справку"),
+            BotCommand("webhooks", "Просмотр вебхуков от Bitrix24"),
         ]
         
         # Устанавливаем команды для всех чатов
@@ -1754,6 +1997,8 @@ def main():
     application.add_handler(CommandHandler("link_username", link_username))
     application.add_handler(CommandHandler("departments", departments_command))
     application.add_handler(CommandHandler("group_info", group_info_command))
+    application.add_handler(CommandHandler("webhooks", webhooks_command))
+    application.add_handler(CommandHandler("webhook", webhook_detail_command))
     
     # Обработчик для reply-сообщений с упоминанием бота
     # Регистрируем ПЕРЕД ConversationHandler, чтобы он имел приоритет
