@@ -3057,7 +3057,21 @@ def main():
                                         try:
                                             logger.info(f"📤 Отправка уведомления о событии {event} для задачи {task_id}...")
                                             auth_data = data.get('auth', {})
-                                            await task_notification_service.handle_task_event(event, task_data, auth_data)
+                                            
+                                            # Извлекаем FIELDS_BEFORE и FIELDS_AFTER для определения изменений
+                                            fields_before = None
+                                            fields_after = None
+                                            if isinstance(data_obj, dict):
+                                                fields_before = data_obj.get('FIELDS_BEFORE')
+                                                fields_after = data_obj.get('FIELDS_AFTER')
+                                            
+                                            await task_notification_service.handle_task_event(
+                                                event, 
+                                                task_data, 
+                                                auth_data,
+                                                fields_before=fields_before,
+                                                fields_after=fields_after
+                                            )
                                             logger.info(f"✅ Обработано событие задачи {task_id}: {event}")
                                         except Exception as notif_error:
                                             logger.error(f"❌ Ошибка при обработке уведомления о задаче {task_id}: {notif_error}", exc_info=True)
