@@ -2002,3 +2002,155 @@ class Bitrix24Client:
         logger.info("   События задач: ONTASKADD, ONTASKUPDATE, ONTASKDELETE")
         logger.info("   События комментариев: ONTASKCOMMENTADD, ONTASKCOMMENTUPDATE, ONTASKCOMMENTDELETE")
         return []
+    
+    def get_task_chat_message(self, chat_id: int, message_id: int) -> Optional[Dict]:
+        """
+        Получение сообщения из чата задачи
+        
+        ПРИМЕЧАНИЕ: После обновления Bitrix24 комментарии к задачам стали сообщениями в чатах.
+        Используйте этот метод вместо get_task_comment для получения комментариев.
+        
+        Args:
+            chat_id: ID чата задачи (из поля chatId задачи)
+            message_id: ID сообщения (MESSAGE_ID из вебхука ONTASKCOMMENTADD)
+            
+        Returns:
+            Информация о сообщении или None
+        """
+        try:
+            # Пробуем разные варианты параметров
+            result = None
+            
+            # Вариант 1: camelCase параметры
+            try:
+                result = self._make_request("im.message.get", {
+                    "chatId": chat_id,
+                    "id": message_id
+                })
+            except Exception as e1:
+                # Вариант 2: UPPERCASE параметры
+                try:
+                    result = self._make_request("im.message.get", {
+                        "CHAT_ID": chat_id,
+                        "ID": message_id
+                    })
+                except Exception as e2:
+                    # Вариант 3: смешанный формат
+                    try:
+                        result = self._make_request("im.message.get", {
+                            "CHAT_ID": chat_id,
+                            "id": message_id
+                        })
+                    except Exception as e3:
+                        logger.warning(f"Все варианты вызова im.message.get не сработали для сообщения {message_id} в чате {chat_id}")
+                        logger.debug(f"Ошибки: {e1}, {e2}, {e3}")
+            
+            if result and result.get("result"):
+                message_data = result["result"]
+                # Может быть словарь или список
+                if isinstance(message_data, dict):
+                    return {
+                        "id": message_data.get("id") or message_data.get("ID"),
+                        "chatId": message_data.get("chatId") or message_data.get("CHAT_ID") or chat_id,
+                        "authorId": message_data.get("authorId") or message_data.get("AUTHOR_ID"),
+                        "message": message_data.get("message") or message_data.get("MESSAGE"),
+                        "date": message_data.get("date") or message_data.get("DATE"),
+                        "files": message_data.get("files") or message_data.get("FILES", [])
+                    }
+                elif isinstance(message_data, list) and len(message_data) > 0:
+                    # Если вернулся список, берем первое сообщение
+                    msg = message_data[0]
+                    return {
+                        "id": msg.get("id") or msg.get("ID"),
+                        "chatId": msg.get("chatId") or msg.get("CHAT_ID") or chat_id,
+                        "authorId": msg.get("authorId") or msg.get("AUTHOR_ID"),
+                        "message": msg.get("message") or msg.get("MESSAGE"),
+                        "date": msg.get("date") or msg.get("DATE"),
+                        "files": msg.get("files") or msg.get("FILES", [])
+                    }
+            
+            return None
+        except Exception as e:
+            logger.error(f"Ошибка при получении сообщения {message_id} из чата {chat_id}: {e}", exc_info=True)
+            return None
+    
+    def get_task_chat_messages(self, chat_id: int, limit: int = 50) -> List[Dict]:
+        """
+        Получение последних сообщений из чата задачи
+        
+        ПРИМЕЧАНИЕ: После обновления Bitrix24 комментарии к задачам стали сообщениями в чатах.
+        Используйте этот метод для получения всех комментариев к задаче.
+        
+        Args:
+            chat_id: ID чата задачи (из поля chatId задачи)
+            limit: Количество сообщений (по умолчанию 50)
+            
+        Returns:
+            Список сообщений из чата
+        """
+        try:
+            result = self._make_request("im.message.get", {
+                "CHAT_ID": chat_id,
+                "LIMIT": limit
+            })
+            
+            if result and result.get("result"):
+                messages = result["result"]
+                if isinstance(messages, list):
+                    return [
+                        {
+                            "id": msg.get("id") or msg.get("ID"),
+                            "chatId": msg.get("chatId") or msg.get("CHAT_ID") or chat_id,
+                            "authorId": msg.get("authorId") or msg.get("AUTHOR_ID"),
+                            "message": msg.get("message") or msg.get("MESSAGE"),
+                            "date": msg.get("date") or msg.get("DATE"),
+                            "files": msg.get("files") or msg.get("FILES", [])
+                        }
+                        for msg in messages
+                    ]
+                elif isinstance(messages, dict):
+                    # Если вернулся один объект, оборачиваем в список
+                    return [{
+                        "id": messages.get("id") or messages.get("ID"),
+                        "chatId": messages.get("chatId") or messages.get("CHAT_ID") or chat_id,
+                        "authorId": messages.get("authorId") or messages.get("AUTHOR_ID"),
+                        "message": messages.get("message") or messages.get("MESSAGE"),
+                        "date": messages.get("date") or messages.get("DATE"),
+                        "files": messages.get("files") or messages.get("FILES", [])
+                    }]
+            
+            return []
+        except Exception as e:
+            logger.error(f"Ошибка при получении сообщений из чата {chat_id}: {e}", exc_info=True)
+            return []
+    
+    def get_task_chat_info(self, chat_id: int) -> Optional[Dict]:
+        """
+        Получение информации о чате задачи
+        
+        Args:
+            chat_id: ID чата задачи (из поля chatId задачи)
+            
+        Returns:
+            Информация о чате или None
+        """
+        try:
+            result = self._make_request("im.chat.get", {
+                "CHAT_ID": chat_id
+            })
+            
+            if result and result.get("result"):
+                chat_data = result["result"]
+                return {
+                    "id": chat_data.get("id") or chat_data.get("ID") or chat_id,
+                    "title": chat_data.get("title") or chat_data.get("TITLE"),
+                    "type": chat_data.get("type") or chat_data.get("TYPE"),
+                    "avatar": chat_data.get("avatar") or chat_data.get("AVATAR"),
+                    "ownerId": chat_data.get("ownerId") or chat_data.get("OWNER_ID"),
+                    "members": chat_data.get("members") or chat_data.get("MEMBERS", [])
+                }
+            
+            return None
+        except Exception as e:
+            logger.error(f"Ошибка при получении информации о чате {chat_id}: {e}", exc_info=True)
+            return None

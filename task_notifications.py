@@ -160,12 +160,26 @@ class TaskNotificationService:
             if self.telegram_thread_id:
                 send_params['message_thread_id'] = self.telegram_thread_id
             
-            result = await self.telegram_bot.send_message(**send_params)
-            
-            if self.telegram_thread_id:
-                logger.info(f"✅ Уведомление успешно отправлено в группу {self.telegram_group_id}, топик {self.telegram_thread_id} (message_id: {result.message_id})")
-            else:
-                logger.info(f"✅ Уведомление успешно отправлено в группу {self.telegram_group_id} (message_id: {result.message_id})")
+            # Пробуем отправить сообщение
+            try:
+                result = await self.telegram_bot.send_message(**send_params)
+                if self.telegram_thread_id:
+                    logger.info(f"✅ Уведомление успешно отправлено в группу {self.telegram_group_id}, топик {self.telegram_thread_id} (message_id: {result.message_id})")
+                else:
+                    logger.info(f"✅ Уведомление успешно отправлено в группу {self.telegram_group_id} (message_id: {result.message_id})")
+            except Exception as send_error:
+                # Если ошибка связана с thread_id (топик не найден), пробуем отправить без thread_id
+                error_str = str(send_error)
+                if 'thread' in error_str.lower() or 'Message thread not found' in error_str:
+                    logger.warning(f"⚠️ Топик {self.telegram_thread_id} не найден, пробуем отправить без топика")
+                    # Убираем thread_id и пробуем снова
+                    send_params_without_thread = send_params.copy()
+                    send_params_without_thread.pop('message_thread_id', None)
+                    result = await self.telegram_bot.send_message(**send_params_without_thread)
+                    logger.info(f"✅ Уведомление успешно отправлено в группу {self.telegram_group_id} без топика (message_id: {result.message_id})")
+                else:
+                    # Если другая ошибка, пробрасываем её дальше
+                    raise
         except Exception as e:
             if self.telegram_thread_id:
                 logger.error(f"❌ Ошибка при отправке уведомления в группу {self.telegram_group_id}, топик {self.telegram_thread_id}: {e}", exc_info=True)
@@ -634,17 +648,32 @@ class TaskNotificationService:
         """
         try:
             task_id = comment_data.get('TASK_ID') or comment_data.get('taskId') or comment_data.get('TASKID')
-            comment_id = comment_data.get('ID') or comment_data.get('id')
+            # ВАЖНО: Bitrix24 отправляет ID комментария как "0" в поле ID, реальный ID находится в MESSAGE_ID
+            comment_id = comment_data.get('MESSAGE_ID') or comment_data.get('messageId') or comment_data.get('MESSAGEID')
+            # Fallback на ID только если MESSAGE_ID нет
+            if not comment_id or comment_id == '0':
+                comment_id = comment_data.get('ID') or comment_data.get('id')
             
             logger.debug(f"Извлеченные данные из комментария: task_id={task_id}, comment_id={comment_id}")
             logger.debug(f"Полные данные комментария: {comment_data}")
             
-            if not task_id or not comment_id:
-                logger.warning(f"Не удалось получить ID задачи или комментария из данных: {comment_data}")
+            if not task_id:
+                logger.warning(f"Не удалось получить ID задачи из данных: {comment_data}")
                 return
             
+            # Если comment_id равен "0" или отсутствует, это нормально для некоторых событий
+            # но мы все равно можем обработать событие
+            if not comment_id or comment_id == '0':
+                logger.warning(f"⚠️ ID комментария равен 0 или отсутствует. Используем MESSAGE_ID или пропускаем получение комментария через API")
+                comment_id_int = None
+            else:
+                try:
+                    comment_id_int = int(comment_id)
+                except (ValueError, TypeError):
+                    logger.warning(f"⚠️ Неверный формат ID комментария: {comment_id}")
+                    comment_id_int = None
+            
             task_id_int = int(task_id)
-            comment_id_int = int(comment_id)
             event_upper = event.upper()
             
             # Используем основной Bitrix24Client с вебхук токеном из переменных окружения
@@ -674,35 +703,21 @@ class TaskNotificationService:
                         logger.warning(f"⚠️ Не удалось создать Bitrix24Client с доменом {webhook_domain}: {e}")
                         logger.info("💡 Используем основной Bitrix24Client")
             
-            # Получаем полную информацию о комментарии через REST API
-            full_comment_info = None
-            if 'ONTASKCOMMENTADD' in event_upper or 'ONTASKCOMMENTUPDATE' in event_upper:
-                try:
-                    full_comment_info = api_client.get_task_comment(task_id_int, comment_id_int)
-                    if full_comment_info:
-                        logger.info(f"✅ Получена полная информация о комментарии {comment_id_int} через REST API")
-                        logger.debug(f"Автор комментария: {full_comment_info.get('authorId')}")
-                    else:
-                        logger.warning(f"⚠️ Не удалось получить полную информацию о комментарии {comment_id_int}")
-                except Exception as e:
-                    error_str = str(e)
-                    # Если ошибка 404 и использовался не основной клиент, пробуем основной клиент
-                    if '404' in error_str or 'Method not found' in error_str:
-                        if api_client != self.bitrix_client:
-                            logger.warning(f"⚠️ Метод недоступен для клиента с доменом {api_client.domain}, пробуем основной клиент")
-                            try:
-                                full_comment_info = self.bitrix_client.get_task_comment(task_id_int, comment_id_int)
-                                if full_comment_info:
-                                    logger.info(f"✅ Получена информация о комментарии через основной клиент")
-                            except Exception as e2:
-                                logger.warning(f"⚠️ Ошибка при получении комментария через основной клиент: {e2}")
-                    else:
-                        logger.warning(f"⚠️ Ошибка при получении комментария через REST API: {e}")
-            
-            # Получаем информацию о задаче для получения создателя и исполнителя
+            # Получаем информацию о задаче для получения создателя, исполнителя и chatId
+            # ВАЖНО: Сначала получаем задачу, чтобы получить chatId для работы с чатом
             try:
                 logger.info(f"🔍 Запрос информации о задаче {task_id_int} через API клиент (домен: {api_client.domain})")
                 task_info = api_client.get_task_by_id(task_id_int)
+                
+                # Получаем chatId задачи для работы с чатом
+                chat_id = None
+                if task_info:
+                    chat_id = task_info.get('chatId') or task_info.get('chat_id')
+                    if chat_id:
+                        logger.info(f"💬 Найден chatId задачи {task_id_int}: {chat_id}")
+                    else:
+                        logger.debug(f"ℹ️ У задачи {task_id_int} нет chatId (возможно, старая версия Bitrix24)")
+                
                 if task_info:
                     logger.info(f"📦 Полученная информация о задаче {task_id_int}:")
                     logger.info(f"   Тип: {type(task_info)}")
@@ -712,7 +727,7 @@ class TaskNotificationService:
                     task_title = task_info.get('title', 'Без названия')
                     responsible_id = task_info.get('responsibleId')
                     created_by_id = task_info.get('createdBy')
-                    logger.info(f"✅ Получена информация о задаче {task_id_int}: создатель={created_by_id}, исполнитель={responsible_id}")
+                    logger.info(f"✅ Получена информация о задаче {task_id_int}: создатель={created_by_id}, исполнитель={responsible_id}, chatId={chat_id}")
                 else:
                     logger.warning(f"⚠️ Не удалось получить информацию о задаче {task_id_int} (task_info = None)")
                     task_title = 'Без названия'
@@ -736,7 +751,11 @@ class TaskNotificationService:
                                 task_title = task_info.get('title', 'Без названия')
                                 responsible_id = task_info.get('responsibleId')
                                 created_by_id = task_info.get('createdBy')
-                                logger.info(f"✅ Получена информация о задаче через основной клиент: создатель={created_by_id}, исполнитель={responsible_id}")
+                                # Получаем chatId из задачи через основной клиент
+                                chat_id = task_info.get('chatId') or task_info.get('chat_id')
+                                if chat_id:
+                                    logger.info(f"💬 Найден chatId задачи {task_id_int} через основной клиент: {chat_id}")
+                                logger.info(f"✅ Получена информация о задаче через основной клиент: создатель={created_by_id}, исполнитель={responsible_id}, chatId={chat_id}")
                             else:
                                 logger.warning(f"⚠️ Не удалось получить информацию о задаче {task_id_int} через основной клиент (task_info = None)")
                                 task_title = 'Без названия'
@@ -752,11 +771,42 @@ class TaskNotificationService:
                         task_title = 'Без названия'
                         responsible_id = None
                         created_by_id = None
+                        chat_id = None
                 else:
                     logger.warning(f"⚠️ Ошибка при получении задачи {task_id_int}: {e}")
                     task_title = 'Без названия'
                     responsible_id = None
                     created_by_id = None
+                    chat_id = None
+            
+            # ПРИМЕЧАНИЕ: После обновления Bitrix24 комментарии к задачам стали сообщениями в чатах
+            # Используем API чатов вместо API комментариев задач
+            full_comment_info = None
+            
+            # Получаем сообщение из чата задачи (комментарий)
+            if chat_id and comment_id_int and ('ONTASKCOMMENTADD' in event_upper or 'ONTASKCOMMENTUPDATE' in event_upper):
+                # Используем MESSAGE_ID как ID сообщения в чате
+                message_id = comment_data.get('MESSAGE_ID') or str(comment_id_int)
+                try:
+                    message_id_int = int(message_id)
+                    full_comment_info = api_client.get_task_chat_message(chat_id, message_id_int)
+                    if full_comment_info:
+                        logger.info(f"✅ Получена информация о сообщении {message_id_int} из чата {chat_id} через API чатов")
+                        logger.debug(f"Автор сообщения: {full_comment_info.get('authorId')}")
+                    else:
+                        logger.debug(f"ℹ️ Не удалось получить сообщение {message_id_int} из чата {chat_id}")
+                except (ValueError, TypeError) as e:
+                    logger.debug(f"ℹ️ Неверный формат MESSAGE_ID: {message_id}, ошибка: {e}")
+                except Exception as e:
+                    error_str = str(e)
+                    if 'Method not found' in error_str or 'Could not find description' in error_str:
+                        logger.debug(f"ℹ️ Метод im.message.get недоступен (возможно, нет прав вебхука на im.message.get)")
+                    else:
+                        logger.debug(f"ℹ️ Ошибка при получении сообщения из чата через API: {e}")
+            elif not chat_id:
+                logger.debug(f"ℹ️ У задачи {task_id_int} нет chatId, пропускаем получение сообщения через API чатов")
+            elif not comment_id_int:
+                logger.debug(f"ℹ️ ID комментария отсутствует, пропускаем получение сообщения через API")
             
             # Формируем ссылку на задачу
             task_url = self.bitrix_client.get_task_url(task_id_int, int(responsible_id) if responsible_id else None)
@@ -764,12 +814,18 @@ class TaskNotificationService:
             # Находим Telegram ID через базу данных для зарегистрированных пользователей
             telegram_ids = []
             
-            # Получаем автора комментария (из полной информации или из вебхука)
+            # Получаем автора комментария (из сообщения в чате или из вебхука)
             author_id = None
             if full_comment_info:
-                author_id = full_comment_info.get('authorId')
+                # Используем данные из сообщения в чате
+                author_id = full_comment_info.get('authorId') or full_comment_info.get('AUTHOR_ID')
+                logger.debug(f"✅ Автор комментария из сообщения в чате: {author_id}")
             else:
+                # Пробуем получить из вебхука (может отсутствовать)
                 author_id = comment_data.get('AUTHOR_ID') or comment_data.get('authorId') or comment_data.get('AUTHORID')
+                if not author_id:
+                    logger.debug(f"ℹ️ AUTHOR_ID не найден в данных вебхука (это нормально для новых версий Bitrix24)")
+                    logger.debug(f"💡 Автор будет определен через задачу (создатель/исполнитель)")
             
             # Ищем Telegram ID для создателя задачи (если он зарегистрирован)
             if created_by_id:
@@ -846,11 +902,19 @@ class TaskNotificationService:
             if 'ONTASKCOMMENTADD' in event_upper:
                 # Если есть текст комментария, добавляем его в сообщение
                 comment_text = ""
-                if full_comment_info and full_comment_info.get('postMessage'):
-                    comment_text_preview = full_comment_info['postMessage'][:100]
-                    if len(full_comment_info['postMessage']) > 100:
-                        comment_text_preview += "..."
-                    comment_text = f": {comment_text_preview}"
+                if full_comment_info:
+                    # Пробуем разные поля для текста сообщения
+                    comment_message = (
+                        full_comment_info.get('message') or 
+                        full_comment_info.get('MESSAGE') or 
+                        full_comment_info.get('postMessage') or
+                        full_comment_info.get('POST_MESSAGE')
+                    )
+                    if comment_message:
+                        comment_text_preview = str(comment_message)[:100]
+                        if len(str(comment_message)) > 100:
+                            comment_text_preview += "..."
+                        comment_text = f": {comment_text_preview}"
                 message = f"в задаче <a href='{task_url}'>«{task_title}»</a> новый комментарий{comment_text}"
                 notification_type = "comment_added"
             elif 'ONTASKCOMMENTUPDATE' in event_upper:
@@ -864,18 +928,21 @@ class TaskNotificationService:
                 return
             
             # Проверяем, не отправляли ли уже уведомление для этого события
-            notification_key = self._get_notification_key(task_id_int, notification_type, str(comment_id))
+            # Используем MESSAGE_ID или comment_id для уникальности
+            notification_extra = str(comment_id) if comment_id else f"msg_{comment_data.get('MESSAGE_ID', 'unknown')}"
+            notification_key = self._get_notification_key(task_id_int, notification_type, notification_extra)
             if self._was_notification_sent(notification_key):
-                logger.debug(f"Уведомление для события {event} комментария {comment_id} уже отправлено")
+                logger.debug(f"Уведомление для события {event} комментария {notification_extra} уже отправлено")
                 return
             
             # Отправляем уведомление в группу с упоминанием зарегистрированных пользователей
             await self._send_notification(message, telegram_ids)
             
             # Отмечаем уведомление как отправленное
-            self._mark_notification_sent(notification_key, task_id_int, notification_type, str(comment_id))
+            self._mark_notification_sent(notification_key, task_id_int, notification_type, notification_extra)
             
-            logger.info(f"✅ Отправлено уведомление о событии {event} для комментария {comment_id} к задаче {task_id_int} (уведомлены: {len(telegram_ids)} пользователей)")
+            comment_info = f"комментария {notification_extra}" if notification_extra else "комментария"
+            logger.info(f"✅ Отправлено уведомление о событии {event} для {comment_info} к задаче {task_id_int} (уведомлены: {len(telegram_ids)} пользователей)")
             
         except Exception as e:
             logger.error(f"❌ Ошибка при обработке события комментария {event}: {e}", exc_info=True)
