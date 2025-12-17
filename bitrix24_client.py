@@ -2187,3 +2187,288 @@ class Bitrix24Client:
         except Exception as e:
             logger.error(f"Ошибка при получении информации о чате {chat_id}: {e}", exc_info=True)
             return None
+    
+    def get_task_comment_text_multiple_methods(self, task_id: int, message_id: int, chat_id: int = None) -> Optional[str]:
+        """
+        Получение текста комментария к задаче с использованием максимума возможных методов.
+        Пробует все методы по очереди до первого рабочего.
+        
+        Args:
+            task_id: ID задачи
+            message_id: ID сообщения (MESSAGE_ID из вебхука ONTASKCOMMENTADD)
+            chat_id: ID чата задачи (опционально, будет получен автоматически если не указан)
+            
+        Returns:
+            Текст комментария или None, если не удалось получить
+        """
+        # Если chat_id не указан, получаем его из задачи
+        if not chat_id:
+            try:
+                task_info = self.get_task_by_id(task_id)
+                if task_info:
+                    chat_id = task_info.get('chatId') or task_info.get('chat_id')
+                    if chat_id:
+                        logger.info(f"✅ Получен chatId {chat_id} для задачи {task_id}")
+                    else:
+                        logger.warning(f"⚠️ У задачи {task_id} нет chatId")
+                else:
+                    logger.warning(f"⚠️ Не удалось получить информацию о задаче {task_id}")
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка при получении chatId для задачи {task_id}: {e}")
+        
+        # Список методов для попытки получения комментария
+        methods = []
+        
+        # Метод 1: im.message.get с chatId и id (camelCase)
+        if chat_id:
+            methods.append({
+                'name': 'Метод 1: im.message.get (chatId, id)',
+                'func': lambda: self._try_get_message_method1(chat_id, message_id)
+            })
+        
+        # Метод 2: im.message.get с CHAT_ID и ID (UPPERCASE)
+        if chat_id:
+            methods.append({
+                'name': 'Метод 2: im.message.get (CHAT_ID, ID)',
+                'func': lambda: self._try_get_message_method2(chat_id, message_id)
+            })
+        
+        # Метод 3: im.message.get с CHAT_ID и id (смешанный)
+        if chat_id:
+            methods.append({
+                'name': 'Метод 3: im.message.get (CHAT_ID, id)',
+                'func': lambda: self._try_get_message_method3(chat_id, message_id)
+            })
+        
+        # Метод 4: im.message.get только с ID (без CHAT_ID)
+        methods.append({
+            'name': 'Метод 4: im.message.get (только ID)',
+            'func': lambda: self._try_get_message_method4(message_id)
+        })
+        
+        # Метод 5: im.message.get с MESSAGE_ID вместо ID
+        methods.append({
+            'name': 'Метод 5: im.message.get (MESSAGE_ID)',
+            'func': lambda: self._try_get_message_method5(message_id)
+        })
+        
+        # Метод 6: im.message.list с последующим поиском по ID
+        if chat_id:
+            methods.append({
+                'name': 'Метод 6: im.message.list + поиск по ID',
+                'func': lambda: self._try_get_message_method6(chat_id, message_id)
+            })
+        
+        # Метод 7: tasks.task.comment.get (старый метод, может не работать)
+        methods.append({
+            'name': 'Метод 7: tasks.task.comment.get',
+            'func': lambda: self._try_get_message_method7(task_id, message_id)
+        })
+        
+        # Метод 8: im.dialog.messages.get (если существует)
+        if chat_id:
+            methods.append({
+                'name': 'Метод 8: im.dialog.messages.get',
+                'func': lambda: self._try_get_message_method8(chat_id, message_id)
+            })
+        
+        # Метод 9: im.dialog.get + im.message.list
+        if chat_id:
+            methods.append({
+                'name': 'Метод 9: im.dialog.get + im.message.list',
+                'func': lambda: self._try_get_message_method9(chat_id, message_id)
+            })
+        
+        # Метод 10: im.chat.get + im.message.list
+        if chat_id:
+            methods.append({
+                'name': 'Метод 10: im.chat.get + im.message.list',
+                'func': lambda: self._try_get_message_method10(chat_id, message_id)
+            })
+        
+        # Метод 11: im.message.get с chatId и messageId
+        if chat_id:
+            methods.append({
+                'name': 'Метод 11: im.message.get (chatId, messageId)',
+                'func': lambda: self._try_get_message_method11(chat_id, message_id)
+            })
+        
+        # Метод 12: im.message.get с CHAT_ID и MESSAGE_ID
+        if chat_id:
+            methods.append({
+                'name': 'Метод 12: im.message.get (CHAT_ID, MESSAGE_ID)',
+                'func': lambda: self._try_get_message_method12(chat_id, message_id)
+            })
+        
+        # Пробуем все методы по очереди
+        for method_info in methods:
+            try:
+                logger.info(f"🔍 Попытка: {method_info['name']}")
+                result = method_info['func']()
+                if result:
+                    # Обрабатываем разные форматы ответа (словарь или список)
+                    if isinstance(result, list):
+                        # Если результат - список, берем первое сообщение
+                        if len(result) > 0:
+                            result = result[0]
+                        else:
+                            logger.debug(f"⚠️ Метод {method_info['name']} вернул пустой список")
+                            continue
+                    
+                    if isinstance(result, dict):
+                        # Извлекаем текст из разных возможных полей
+                        comment_text = (
+                            result.get('message') or 
+                            result.get('MESSAGE') or 
+                            result.get('postMessage') or 
+                            result.get('POST_MESSAGE') or
+                            result.get('text') or
+                            result.get('TEXT')
+                        )
+                        if comment_text:
+                            logger.info(f"✅ Успешно: {method_info['name']} - получен текст комментария")
+                            return str(comment_text)
+                        else:
+                            logger.debug(f"⚠️ Метод {method_info['name']} вернул результат, но без текста сообщения")
+                            logger.debug(f"   Доступные поля: {list(result.keys())}")
+                    else:
+                        logger.debug(f"⚠️ Метод {method_info['name']} вернул неожиданный тип результата: {type(result)}")
+                else:
+                    logger.debug(f"❌ Метод {method_info['name']} вернул None")
+            except Exception as e:
+                logger.debug(f"❌ Метод {method_info['name']} вызвал ошибку: {type(e).__name__}: {e}")
+                continue
+        
+        logger.warning(f"⚠️ Все методы получения текста комментария не сработали для сообщения {message_id} к задаче {task_id}")
+        return None
+    
+    def _try_get_message_method1(self, chat_id: int, message_id: int) -> Optional[Dict]:
+        """Метод 1: im.message.get с chatId и id (camelCase)"""
+        result = self._make_request("im.message.get", {
+            "chatId": chat_id,
+            "id": message_id
+        })
+        return result.get("result") if result else None
+    
+    def _try_get_message_method2(self, chat_id: int, message_id: int) -> Optional[Dict]:
+        """Метод 2: im.message.get с CHAT_ID и ID (UPPERCASE)"""
+        result = self._make_request("im.message.get", {
+            "CHAT_ID": chat_id,
+            "ID": message_id
+        })
+        return result.get("result") if result else None
+    
+    def _try_get_message_method3(self, chat_id: int, message_id: int) -> Optional[Dict]:
+        """Метод 3: im.message.get с CHAT_ID и id (смешанный)"""
+        result = self._make_request("im.message.get", {
+            "CHAT_ID": chat_id,
+            "id": message_id
+        })
+        return result.get("result") if result else None
+    
+    def _try_get_message_method4(self, message_id: int) -> Optional[Dict]:
+        """Метод 4: im.message.get только с ID (без CHAT_ID)"""
+        result = self._make_request("im.message.get", {
+            "ID": message_id
+        })
+        return result.get("result") if result else None
+    
+    def _try_get_message_method5(self, message_id: int) -> Optional[Dict]:
+        """Метод 5: im.message.get с MESSAGE_ID вместо ID"""
+        result = self._make_request("im.message.get", {
+            "MESSAGE_ID": message_id
+        })
+        return result.get("result") if result else None
+    
+    def _try_get_message_method6(self, chat_id: int, message_id: int) -> Optional[Dict]:
+        """Метод 6: im.message.list с последующим поиском по ID"""
+        result = self._make_request("im.message.list", {
+            "CHAT_ID": chat_id,
+            "LIMIT": 100
+        })
+        if result and result.get("result"):
+            messages = result["result"] if isinstance(result["result"], list) else [result["result"]]
+            for msg in messages:
+                msg_id = msg.get("id") or msg.get("ID")
+                if msg_id and str(msg_id) == str(message_id):
+                    return msg
+        return None
+    
+    def _try_get_message_method7(self, task_id: int, message_id: int) -> Optional[Dict]:
+        """Метод 7: tasks.task.comment.get (старый метод)"""
+        try:
+            result = self._make_request("tasks.task.comment.get", {
+                "taskId": task_id,
+                "commentId": message_id
+            })
+            if result and result.get("result"):
+                comment_data = result["result"].get("comment")
+                if comment_data:
+                    return {
+                        "message": comment_data.get("POST_MESSAGE"),
+                        "authorId": comment_data.get("AUTHOR_ID")
+                    }
+        except:
+            pass
+        return None
+    
+    def _try_get_message_method8(self, chat_id: int, message_id: int) -> Optional[Dict]:
+        """Метод 8: im.dialog.messages.get"""
+        try:
+            result = self._make_request("im.dialog.messages.get", {
+                "DIALOG_ID": chat_id,
+                "LIMIT": 100
+            })
+            if result and result.get("result"):
+                messages = result["result"] if isinstance(result["result"], list) else [result["result"]]
+                for msg in messages:
+                    msg_id = msg.get("id") or msg.get("ID")
+                    if msg_id and str(msg_id) == str(message_id):
+                        return msg
+        except:
+            pass
+        return None
+    
+    def _try_get_message_method9(self, chat_id: int, message_id: int) -> Optional[Dict]:
+        """Метод 9: im.dialog.get + im.message.list"""
+        try:
+            # Получаем информацию о диалоге
+            dialog_result = self._make_request("im.dialog.get", {
+                "DIALOG_ID": chat_id
+            })
+            if dialog_result:
+                # Пробуем получить сообщения через im.message.list
+                return self._try_get_message_method6(chat_id, message_id)
+        except:
+            pass
+        return None
+    
+    def _try_get_message_method10(self, chat_id: int, message_id: int) -> Optional[Dict]:
+        """Метод 10: im.chat.get + im.message.list"""
+        try:
+            # Получаем информацию о чате
+            chat_result = self._make_request("im.chat.get", {
+                "CHAT_ID": chat_id
+            })
+            if chat_result:
+                # Пробуем получить сообщения через im.message.list
+                return self._try_get_message_method6(chat_id, message_id)
+        except:
+            pass
+        return None
+    
+    def _try_get_message_method11(self, chat_id: int, message_id: int) -> Optional[Dict]:
+        """Метод 11: im.message.get с chatId и messageId"""
+        result = self._make_request("im.message.get", {
+            "chatId": chat_id,
+            "messageId": message_id
+        })
+        return result.get("result") if result else None
+    
+    def _try_get_message_method12(self, chat_id: int, message_id: int) -> Optional[Dict]:
+        """Метод 12: im.message.get с CHAT_ID и MESSAGE_ID"""
+        result = self._make_request("im.message.get", {
+            "CHAT_ID": chat_id,
+            "MESSAGE_ID": message_id
+        })
+        return result.get("result") if result else None

@@ -1067,41 +1067,55 @@ class TaskNotificationService:
             # ПРИМЕЧАНИЕ: После обновления Bitrix24 комментарии к задачам стали сообщениями в чатах
             # Используем API чатов вместо API комментариев задач
             full_comment_info = None
+            comment_text = None
             
-            # Получаем сообщение из чата задачи (комментарий)
-            if chat_id and comment_id_int and ('ONTASKCOMMENTADD' in event_upper or 'ONTASKCOMMENTUPDATE' in event_upper):
+            # Получаем сообщение из чата задачи (комментарий) используя максимум возможных методов
+            if comment_id_int and ('ONTASKCOMMENTADD' in event_upper or 'ONTASKCOMMENTUPDATE' in event_upper):
                 # Используем MESSAGE_ID как ID сообщения в чате
                 message_id = comment_data.get('MESSAGE_ID') or str(comment_id_int)
                 try:
                     message_id_int = int(message_id)
-                    logger.info(f"🔍 Попытка получить текст комментария: chatId={chat_id}, messageId={message_id_int}")
-                    full_comment_info = api_client.get_task_chat_message(chat_id, message_id_int)
-                    if full_comment_info:
-                        logger.info(f"✅ Получена информация о сообщении {message_id_int} из чата {chat_id} через API чатов")
-                        logger.info(f"   Автор сообщения: {full_comment_info.get('authorId')}")
-                        comment_text = full_comment_info.get('message') or full_comment_info.get('MESSAGE')
+                    logger.info(f"🔍 Попытка получить текст комментария через множественные методы: taskId={task_id_int}, messageId={message_id_int}, chatId={chat_id}")
+                    
+                    # Сначала пробуем получить полную информацию через старый метод (для совместимости)
+                    if chat_id:
+                        try:
+                            full_comment_info = api_client.get_task_chat_message(chat_id, message_id_int)
+                            if full_comment_info:
+                                logger.info(f"✅ Получена информация о сообщении {message_id_int} из чата {chat_id} через get_task_chat_message")
+                                comment_text = full_comment_info.get('message') or full_comment_info.get('MESSAGE')
+                        except Exception as e:
+                            logger.debug(f"⚠️ get_task_chat_message не сработал: {e}")
+                    
+                    # Если не получилось, пробуем новый метод с множественными способами
+                    if not comment_text:
+                        logger.info(f"🔍 Использование метода get_task_comment_text_multiple_methods для получения текста комментария")
+                        comment_text = api_client.get_task_comment_text_multiple_methods(
+                            task_id=task_id_int,
+                            message_id=message_id_int,
+                            chat_id=chat_id
+                        )
                         if comment_text:
-                            preview = str(comment_text)[:50] + "..." if len(str(comment_text)) > 50 else str(comment_text)
-                            logger.info(f"   Текст комментария: {preview}")
-                        else:
-                            logger.warning(f"⚠️ Текст комментария не найден в ответе API")
+                            logger.info(f"✅ Получен текст комментария через get_task_comment_text_multiple_methods")
+                            # Создаем объект full_comment_info для совместимости
+                            if not full_comment_info:
+                                full_comment_info = {
+                                    'message': comment_text,
+                                    'id': message_id_int
+                                }
+                    
+                    if comment_text:
+                        preview = str(comment_text)[:50] + "..." if len(str(comment_text)) > 50 else str(comment_text)
+                        logger.info(f"   Текст комментария: {preview}")
                     else:
-                        logger.warning(f"⚠️ Не удалось получить сообщение {message_id_int} из чата {chat_id} (full_comment_info = None)")
-                        logger.info(f"💡 Проверьте права вебхука на метод im.message.get в разделе 'Мессенджер (im)'")
+                        logger.warning(f"⚠️ Не удалось получить текст комментария через все доступные методы")
+                        logger.info(f"💡 Проверьте права вебхука на методы im.message.get, im.message.list в разделе 'Мессенджер (im)'")
                 except (ValueError, TypeError) as e:
                     logger.warning(f"⚠️ Неверный формат MESSAGE_ID: {message_id}, ошибка: {e}")
                 except Exception as e:
                     error_str = str(e)
                     logger.warning(f"⚠️ Ошибка при получении сообщения из чата через API: {type(e).__name__}: {e}")
-                    if 'Method not found' in error_str or 'Could not find description' in error_str:
-                        logger.warning(f"💡 Метод im.message.get недоступен. Проверьте права вебхука:")
-                        logger.warning(f"   1. Bitrix24 → Настройки → Разработчикам → Входящий вебхук")
-                        logger.warning(f"   2. Выберите ваш вебхук → Права доступа")
-                        logger.warning(f"   3. Найдите раздел 'Мессенджер (im)' и включите права на модуль")
-                    else:
-                        logger.debug(f"   Детали ошибки: {error_str}")
-            elif not chat_id:
-                logger.debug(f"ℹ️ У задачи {task_id_int} нет chatId, пропускаем получение сообщения через API чатов")
+                    logger.debug(f"   Детали ошибки: {error_str}")
             elif not comment_id_int:
                 logger.debug(f"ℹ️ ID комментария отсутствует, пропускаем получение сообщения через API")
             
@@ -1198,9 +1212,15 @@ class TaskNotificationService:
             # Формируем сообщение в зависимости от типа события
             if 'ONTASKCOMMENTADD' in event_upper:
                 # Если есть текст комментария, добавляем его в сообщение
-                comment_text = ""
-                if full_comment_info:
-                    # Пробуем разные поля для текста сообщения
+                comment_text_preview = ""
+                if comment_text:
+                    # Используем уже полученный текст комментария
+                    comment_text_preview = str(comment_text)[:100]
+                    if len(str(comment_text)) > 100:
+                        comment_text_preview += "..."
+                    comment_text_preview = f": {comment_text_preview}"
+                elif full_comment_info:
+                    # Fallback: пробуем получить из full_comment_info
                     comment_message = (
                         full_comment_info.get('message') or 
                         full_comment_info.get('MESSAGE') or 
@@ -1211,8 +1231,8 @@ class TaskNotificationService:
                         comment_text_preview = str(comment_message)[:100]
                         if len(str(comment_message)) > 100:
                             comment_text_preview += "..."
-                        comment_text = f": {comment_text_preview}"
-                message = f"в задаче <a href='{task_url}'>«{task_title}»</a> новый комментарий{comment_text}"
+                        comment_text_preview = f": {comment_text_preview}"
+                message = f"в задаче <a href='{task_url}'>«{task_title}»</a> новый комментарий{comment_text_preview}"
                 notification_type = "comment_added"
             elif 'ONTASKCOMMENTUPDATE' in event_upper:
                 message = f"в задаче <a href='{task_url}'>«{task_title}»</a> обновлен комментарий"
