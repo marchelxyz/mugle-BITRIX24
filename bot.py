@@ -8,7 +8,10 @@ import logging
 import threading
 import asyncio
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+# Московское время (UTC+3)
+MSK_TIMEZONE = timezone(timedelta(hours=3))
 from typing import Dict, Optional, List
 from urllib.parse import urlencode
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -370,7 +373,7 @@ def parse_deadline(deadline_text: str) -> Optional[str]:
     """
     try:
         deadline_text = deadline_text.strip().lower()
-        now = datetime.now()
+        now = datetime.now(MSK_TIMEZONE)
         
         # Паттерн 1: "через N дней" или "через месяц"
         if deadline_text.startswith('через'):
@@ -402,6 +405,9 @@ def parse_deadline(deadline_text: str) -> Optional[str]:
                 deadline_date = now + timedelta(days=days)
                 # Устанавливаем время на 18:00 (конец рабочего дня)
                 deadline_date = deadline_date.replace(hour=18, minute=0, second=0, microsecond=0)
+                # Убираем временную зону для формата, который ожидает Bitrix24
+                if deadline_date.tzinfo:
+                    deadline_date = deadline_date.replace(tzinfo=None)
                 # Форматируем дату
                 date_str = deadline_date.strftime("%Y-%m-%d %H:%M:%S")
                 return date_str
@@ -636,7 +642,7 @@ async def create_task_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         "message_id": update.message.message_id,
         "thread_id": thread_id,  # Сохраняем thread_id для определения отдела
         "department_id": department_id,  # Сохраняем автоматически определенный отдел
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now(MSK_TIMEZONE).isoformat()
     }
     
     # Формируем URL для Mini App
@@ -1712,7 +1718,7 @@ async def handle_reply_with_mention(update: Update, context: ContextTypes.DEFAUL
         "message_id": message.message_id,  # Сохраняем message_id для ответа
         "thread_id": thread_id,  # Сохраняем thread_id для определения отдела
         "department_id": department_id,  # Сохраняем автоматически определенный отдел
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now(MSK_TIMEZONE).isoformat()
     }
     
     # Получаем username бота для создания Direct Link Mini App

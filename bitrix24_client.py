@@ -4,8 +4,11 @@
 import requests
 import os
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
+
+# Московское время (UTC+3)
+MSK_TIMEZONE = timezone(timedelta(hours=3))
 
 logger = logging.getLogger(__name__)
 
@@ -1796,7 +1799,7 @@ class Bitrix24Client:
         if exclude_status is None:
             exclude_status = [5]  # По умолчанию исключаем завершенные задачи
         
-        now = datetime.now()
+        now = datetime.now(MSK_TIMEZONE)
         overdue_tasks = []
         
         try:
@@ -1871,15 +1874,13 @@ class Bitrix24Client:
         
         Args:
             task: Данные задачи
-            current_time: Текущее время для сравнения (по умолчанию datetime.now())
+            current_time: Текущее время для сравнения (по умолчанию datetime.now(MSK_TIMEZONE))
             
         Returns:
             True если задача просрочена, False иначе
         """
-        from datetime import timezone
-        
         if current_time is None:
-            current_time = datetime.now()
+            current_time = datetime.now(MSK_TIMEZONE)
         
         deadline_str = self._get_task_field(task, ['deadline', 'DEADLINE', 'Deadline'])
         
@@ -1894,9 +1895,12 @@ class Bitrix24Client:
             if 'T' in deadline_str or 'Z' in deadline_str:
                 deadline_dt = datetime.fromisoformat(deadline_str.replace('Z', '+00:00'))
                 if deadline_dt.tzinfo:
-                    # ВАЖНО: Конвертируем в UTC перед удалением временной зоны
-                    # Это гарантирует правильное сравнение с datetime.now()
-                    deadline_dt = deadline_dt.astimezone(timezone.utc).replace(tzinfo=None)
+                    # ВАЖНО: Конвертируем в московское время перед удалением временной зоны
+                    # Это гарантирует правильное сравнение с datetime.now(MSK_TIMEZONE) в московском времени
+                    deadline_dt = deadline_dt.astimezone(MSK_TIMEZONE).replace(tzinfo=None)
+                else:
+                    # Если нет временной зоны, считаем что это UTC и конвертируем в МСК
+                    deadline_dt = deadline_dt.replace(tzinfo=timezone.utc).astimezone(MSK_TIMEZONE).replace(tzinfo=None)
             # Формат YYYY-MM-DD HH:MI:SS
             elif ' ' in deadline_str:
                 deadline_dt = datetime.strptime(deadline_str, '%Y-%m-%d %H:%M:%S')
