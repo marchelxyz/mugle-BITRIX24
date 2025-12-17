@@ -2306,6 +2306,12 @@ class Bitrix24Client:
             'func': lambda: self._try_get_message_method13(task_id, message_id)
         })
         
+        # Метод 14: forum.message.get (получение комментария через форум API)
+        methods.append({
+            'name': 'Метод 14: forum.message.get (через форум)',
+            'func': lambda: self._try_get_message_method14(task_id, message_id)
+        })
+        
         # Пробуем все методы по очереди
         for method_info in methods:
             try:
@@ -2590,4 +2596,208 @@ class Bitrix24Client:
             return None
         except Exception as e:
             logger.debug(f"Ошибка в _try_get_message_method13: {e}")
+            return None
+    
+    def _try_get_message_method14(self, task_id: int, message_id: int) -> Optional[Dict]:
+        """
+        Метод 14: forum.message.get (получение комментария через форум API)
+        
+        Согласно PHP коду Bitrix24, комментарии к задачам хранятся в форуме:
+        - Топик форума имеет XML_ID = 'TASK_' + taskId
+        - Сообщения в топике - это комментарии к задаче
+        - PARAM1 != 'TK' для обычных комментариев
+        
+        Параметры:
+        - task_id: ID задачи
+        - message_id: ID сообщения (комментария) в форуме
+        """
+        try:
+            # Пробуем разные варианты получения сообщения через форум API
+            variants = [
+                # Вариант 1: forum.message.get с ID сообщения
+                {
+                    "method": "forum.message.get",
+                    "params": {"ID": message_id}
+                },
+                # Вариант 2: forum.message.get с id (camelCase)
+                {
+                    "method": "forum.message.get",
+                    "params": {"id": message_id}
+                },
+                # Вариант 3: forum.message.get с MESSAGE_ID
+                {
+                    "method": "forum.message.get",
+                    "params": {"MESSAGE_ID": message_id}
+                },
+                # Вариант 4: forum.message.get с messageId
+                {
+                    "method": "forum.message.get",
+                    "params": {"messageId": message_id}
+                },
+            ]
+            
+            for variant in variants:
+                try:
+                    logger.debug(f"Попытка метода {variant['method']} с параметрами {variant['params']}")
+                    result = self._make_request(variant["method"], variant["params"])
+                    
+                    if result and result.get("result"):
+                        message_data = result["result"]
+                        
+                        # Если результат - словарь с сообщением
+                        if isinstance(message_data, dict):
+                            # Извлекаем текст из разных возможных полей
+                            message_text = (
+                                message_data.get("POST_MESSAGE") or
+                                message_data.get("postMessage") or
+                                message_data.get("MESSAGE") or
+                                message_data.get("message") or
+                                message_data.get("TEXT") or
+                                message_data.get("text") or
+                                message_data.get("CONTENT") or
+                                message_data.get("content")
+                            )
+                            
+                            if message_text:
+                                return {
+                                    "message": message_text,
+                                    "authorId": message_data.get("AUTHOR_ID") or message_data.get("authorId"),
+                                    "id": message_id
+                                }
+                        
+                        # Если результат - строка напрямую
+                        elif isinstance(message_data, str):
+                            return {
+                                "message": message_data,
+                                "id": message_id
+                            }
+                        
+                        logger.debug(f"Метод {variant['method']} вернул результат, но не удалось извлечь текст")
+                        logger.debug(f"   Структура результата: {type(message_data)}, ключи: {list(message_data.keys()) if isinstance(message_data, dict) else 'N/A'}")
+                except Exception as e:
+                    error_str = str(e)
+                    # Если метод не найден (404), пробуем следующий вариант
+                    if "404" in error_str or "not found" in error_str.lower() or "Method not found" in error_str:
+                        logger.debug(f"Метод {variant['method']} не найден, пробуем следующий вариант")
+                        continue
+                    # Для других ошибок логируем и пробуем следующий вариант
+                    logger.debug(f"Ошибка при вызове {variant['method']}: {e}")
+                    continue
+            
+            # Если прямой метод не сработал, пробуем получить через топик задачи
+            # Согласно PHP коду: XML_ID топика = 'TASK_' + taskId
+            topic_xml_id = f"TASK_{task_id}"
+            
+            # Пробуем получить список сообщений из топика задачи
+            list_variants = [
+                # Вариант 1: forum.message.list с фильтром по топику
+                {
+                    "method": "forum.message.list",
+                    "params": {
+                        "FILTER": {
+                            "TOPIC.XML_ID": topic_xml_id,
+                            "!PARAM1": "TK"
+                        }
+                    }
+                },
+                # Вариант 2: forum.message.list с XML_ID топика
+                {
+                    "method": "forum.message.list",
+                    "params": {
+                        "XML_ID": topic_xml_id
+                    }
+                },
+                # Вариант 3: forum.topic.get по XML_ID, затем forum.message.list
+                {
+                    "method": "forum.topic.get",
+                    "params": {
+                        "XML_ID": topic_xml_id
+                    }
+                },
+            ]
+            
+            topic_id = None
+            for list_variant in list_variants:
+                try:
+                    logger.debug(f"Попытка получения топика/сообщений через {list_variant['method']}")
+                    list_result = self._make_request(list_variant["method"], list_variant["params"])
+                    
+                    if list_result and list_result.get("result"):
+                        result_data = list_result["result"]
+                        
+                        # Если получили топик, извлекаем его ID
+                        if isinstance(result_data, dict) and list_variant["method"] == "forum.topic.get":
+                            topic_id = result_data.get("ID") or result_data.get("id")
+                            if topic_id:
+                                logger.debug(f"Найден топик с ID {topic_id} для задачи {task_id}")
+                                break
+                        
+                        # Если получили список сообщений
+                        elif isinstance(result_data, list) or (isinstance(result_data, dict) and "messages" in result_data):
+                            messages = result_data if isinstance(result_data, list) else result_data.get("messages", [])
+                            
+                            # Ищем нужное сообщение по ID
+                            for msg in messages:
+                                msg_id = msg.get("ID") or msg.get("id")
+                                if msg_id and str(msg_id) == str(message_id):
+                                    # Нашли нужное сообщение
+                                    message_text = (
+                                        msg.get("POST_MESSAGE") or
+                                        msg.get("postMessage") or
+                                        msg.get("MESSAGE") or
+                                        msg.get("message") or
+                                        msg.get("TEXT") or
+                                        msg.get("text")
+                                    )
+                                    
+                                    if message_text:
+                                        return {
+                                            "message": message_text,
+                                            "authorId": msg.get("AUTHOR_ID") or msg.get("authorId"),
+                                            "id": message_id
+                                        }
+                except Exception as e:
+                    error_str = str(e)
+                    if "404" in error_str or "not found" in error_str.lower() or "Method not found" in error_str:
+                        logger.debug(f"Метод {list_variant['method']} не найден")
+                        continue
+                    logger.debug(f"Ошибка при вызове {list_variant['method']}: {e}")
+                    continue
+            
+            # Если получили topic_id, пробуем получить сообщения из топика
+            if topic_id:
+                try:
+                    logger.debug(f"Попытка получить сообщения из топика {topic_id}")
+                    messages_result = self._make_request("forum.message.list", {
+                        "TOPIC_ID": topic_id,
+                        "FILTER": {
+                            "!PARAM1": "TK"
+                        }
+                    })
+                    
+                    if messages_result and messages_result.get("result"):
+                        messages = messages_result["result"]
+                        if isinstance(messages, list):
+                            for msg in messages:
+                                msg_id = msg.get("ID") or msg.get("id")
+                                if msg_id and str(msg_id) == str(message_id):
+                                    message_text = (
+                                        msg.get("POST_MESSAGE") or
+                                        msg.get("postMessage") or
+                                        msg.get("MESSAGE") or
+                                        msg.get("message")
+                                    )
+                                    
+                                    if message_text:
+                                        return {
+                                            "message": message_text,
+                                            "authorId": msg.get("AUTHOR_ID") or msg.get("authorId"),
+                                            "id": message_id
+                                        }
+                except Exception as e:
+                    logger.debug(f"Ошибка при получении сообщений из топика {topic_id}: {e}")
+            
+            return None
+        except Exception as e:
+            logger.debug(f"Ошибка в _try_get_message_method14: {e}")
             return None
