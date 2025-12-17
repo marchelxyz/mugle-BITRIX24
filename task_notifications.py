@@ -735,6 +735,9 @@ class TaskNotificationService:
                 responsible_id = task_data.get('RESPONSIBLE_ID') or task_data.get('responsibleId')
                 created_by_id = task_data.get('CREATED_BY') or task_data.get('createdBy')
             
+            # Инициализируем переменную для проверки просроченности (используется для всех событий)
+            is_overdue = False
+            
             # Проверяем регистрацию через БД (LINK) - только зарегистрированные пользователи
             telegram_ids = []
             
@@ -798,6 +801,21 @@ class TaskNotificationService:
                 else:
                     logger.info(f"   Изменения не обнаружены (возможно, первое обновление или нет значимых изменений)")
                 
+                # ВАЖНО: Проверяем просроченность задачи при любом обновлении
+                # Даже если дедлайн не изменился, задача может быть просрочена
+                deadline_str = None
+                
+                if task_info:
+                    deadline_str = task_info.get('deadline') or task_info.get('DEADLINE')
+                elif fields_after:
+                    deadline_str = fields_after.get('DEADLINE') or fields_after.get('deadline')
+                
+                if deadline_str:
+                    # Проверяем, просрочена ли задача
+                    is_overdue = self.bitrix_client._is_task_overdue(
+                        {'deadline': deadline_str, 'id': task_id_int}
+                    )
+                
                 # Формируем сообщение на основе обнаруженных изменений
                 if task_changes['changes']:
                     # Есть конкретные изменения - формируем детальное сообщение
@@ -805,23 +823,27 @@ class TaskNotificationService:
                     message = f"задача <a href='{task_url}'>«{task_title}»</a>: {changes_text}"
                     
                     # Если дедлайн просрочен, добавляем предупреждение в начало
-                    if task_changes['deadline_overdue']:
+                    if task_changes['deadline_overdue'] or is_overdue:
                         message = f"⚠️ {message}"
                 else:
                     # Нет конкретных изменений или они не определены
-                    # Пробуем определить статус из task_info
-                    status = None
-                    if task_info:
-                        status = task_info.get('status') or task_info.get('STATUS')
-                    elif fields_after:
-                        status = fields_after.get('STATUS') or fields_after.get('status')
-                    
-                    if status:
-                        status_name = self._get_status_name(status)
-                        message = f"задача <a href='{task_url}'>«{task_title}»</a>: статус изменен на \"{status_name}\""
+                    # Если задача просрочена, отправляем уведомление о просрочке
+                    if is_overdue:
+                        message = f"⚠️ задача <a href='{task_url}'>«{task_title}»</a>: дедлайн просрочен"
                     else:
-                        # Если ничего не определено, используем общее сообщение
-                        message = f"задача <a href='{task_url}'>«{task_title}»</a> обновлена"
+                        # Пробуем определить статус из task_info
+                        status = None
+                        if task_info:
+                            status = task_info.get('status') or task_info.get('STATUS')
+                        elif fields_after:
+                            status = fields_after.get('STATUS') or fields_after.get('status')
+                        
+                        if status:
+                            status_name = self._get_status_name(status)
+                            message = f"задача <a href='{task_url}'>«{task_title}»</a>: статус изменен на \"{status_name}\""
+                        else:
+                            # Если ничего не определено, используем общее сообщение
+                            message = f"задача <a href='{task_url}'>«{task_title}»</a> обновлена"
                 
                 notification_type = "task_updated"
             elif 'ONTASKDELETE' in event_upper:
@@ -833,15 +855,33 @@ class TaskNotificationService:
             
             # Проверяем, не отправляли ли уже уведомление для этого события
             notification_key = self._get_notification_key(task_id_int, notification_type, event_upper)
-            if self._was_notification_sent(notification_key):
+            notification_already_sent = self._was_notification_sent(notification_key)
+            
+            # ВАЖНО: Для просроченных задач проверяем отдельный ключ уведомления
+            # Это позволяет отправлять уведомления о просрочке при любом обновлении задачи
+            overdue_notification_key = None
+            overdue_notification_sent = False
+            if 'ONTASKUPDATE' in event_upper and is_overdue:
+                overdue_notification_key = self._get_notification_key(task_id_int, "overdue")
+                overdue_notification_sent = self._was_notification_sent(overdue_notification_key)
+            
+            # Если уведомление об обновлении уже отправлено и уведомление о просрочке тоже отправлено - пропускаем
+            if notification_already_sent and (not is_overdue or overdue_notification_sent):
                 logger.debug(f"Уведомление для события {event} задачи {task_id_int} уже отправлено")
                 return
             
-            # Отправляем уведомление с тегами зарегистрированных пользователей
-            await self._send_notification(message, telegram_ids)
+            # Если задача просрочена, но уведомление о просрочке еще не отправлено
+            # отправляем отдельное уведомление о просрочке (даже если уведомление об обновлении уже было)
+            if is_overdue and not overdue_notification_sent:
+                logger.info(f"⚠️ Задача {task_id_int} просрочена, отправляем уведомление о просрочке")
+                overdue_message = f"⚠️ задача <a href='{task_url}'>«{task_title}»</a>: дедлайн просрочен"
+                await self._send_notification(overdue_message, telegram_ids)
+                self._mark_notification_sent(overdue_notification_key, task_id_int, "overdue")
             
-            # Отмечаем уведомление как отправленное
-            self._mark_notification_sent(notification_key, task_id_int, notification_type, event_upper)
+            # Отправляем уведомление об обновлении только если оно еще не было отправлено
+            if not notification_already_sent:
+                await self._send_notification(message, telegram_ids)
+                self._mark_notification_sent(notification_key, task_id_int, notification_type, event_upper)
             
             # Сохраняем текущее состояние задачи в БД для следующего сравнения
             if DATABASE_AVAILABLE and task_info:
