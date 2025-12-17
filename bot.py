@@ -2867,6 +2867,11 @@ def main():
                                         logger.info(f"      RESPONSIBLE_ID (исполнитель): {fields_after.get('RESPONSIBLE_ID')}")
                                     if 'TASK_ID' in fields_after:
                                         logger.info(f"      TASK_ID (для комментариев): {fields_after.get('TASK_ID')}")
+                                    if 'MESSAGE_ID' in fields_after:
+                                        logger.info(f"      MESSAGE_ID (реальный ID комментария): {fields_after.get('MESSAGE_ID')}")
+                                    if 'ID' in fields_after and 'TASK_ID' in fields_after:
+                                        # Для комментариев ID часто равен "0", реальный ID в MESSAGE_ID
+                                        logger.info(f"      ID комментария (может быть 0): {fields_after.get('ID')}")
                                     if 'AUTHOR_ID' in fields_after:
                                         logger.info(f"      AUTHOR_ID (автор комментария): {fields_after.get('AUTHOR_ID')}")
                                     if 'TITLE' in fields_after:
@@ -3087,9 +3092,13 @@ def main():
                                 
                                 if comment_data:
                                     task_id = comment_data.get('TASK_ID') or comment_data.get('taskId') or comment_data.get('TASKID')
-                                    comment_id = comment_data.get('ID') or comment_data.get('id')
+                                    # ВАЖНО: Bitrix24 отправляет ID комментария как "0" в поле ID, реальный ID находится в MESSAGE_ID
+                                    comment_id = comment_data.get('MESSAGE_ID') or comment_data.get('messageId') or comment_data.get('MESSAGEID')
+                                    # Fallback на ID только если MESSAGE_ID нет
+                                    if not comment_id or comment_id == '0':
+                                        comment_id = comment_data.get('ID') or comment_data.get('id')
                                     author_id = comment_data.get('AUTHOR_ID') or comment_data.get('authorId') or comment_data.get('AUTHORID')
-                                    logger.info(f"💬 Обработка события комментария {comment_id} к задаче {task_id}: {event}")
+                                    logger.info(f"💬 Обработка события комментария {comment_id} (MESSAGE_ID: {comment_data.get('MESSAGE_ID', 'N/A')}) к задаче {task_id}: {event}")
                                     logger.info(f"✍️ Автор комментария (AUTHOR_ID): {author_id}")
                                     logger.info(f"📋 Все доступные поля комментария: {list(comment_data.keys())}")
                                     logger.debug(f"Данные комментария: {comment_data}")
