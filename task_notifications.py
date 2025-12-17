@@ -587,19 +587,24 @@ class TaskNotificationService:
                 # Проверяем, просрочен ли дедлайн
                 if deadline_after:
                     try:
+                        from datetime import timezone
                         # Парсим дату дедлайна
                         if isinstance(deadline_after, str):
                             if 'T' in deadline_after or 'Z' in deadline_after:
                                 deadline_dt = datetime.fromisoformat(deadline_after.replace('Z', '+00:00'))
                                 if deadline_dt.tzinfo:
-                                    deadline_dt = deadline_dt.replace(tzinfo=None)
+                                    # ВАЖНО: Конвертируем в UTC перед удалением временной зоны
+                                    deadline_dt = deadline_dt.astimezone(timezone.utc).replace(tzinfo=None)
                             else:
                                 deadline_dt = datetime.strptime(deadline_after, '%Y-%m-%d %H:%M:%S')
                         else:
                             deadline_dt = deadline_after
                         
                         # Если дедлайн просрочен, показываем это, иначе показываем изменение срока
-                        if deadline_dt < datetime.now():
+                        now = datetime.now()
+                        is_overdue = deadline_dt < now
+                        logger.debug(f"🔍 Проверка просроченности дедлайна: deadline={deadline_dt}, current={now}, overdue={is_overdue}")
+                        if is_overdue:
                             changes['deadline_overdue'] = True
                             changes['changes'].append('дедлайн просрочен')
                         else:
@@ -641,17 +646,22 @@ class TaskNotificationService:
             # Проверяем, просрочен ли дедлайн (даже если он не был изменен)
             if deadline_after:
                 try:
+                    from datetime import timezone
                     if isinstance(deadline_after, str):
                         if 'T' in deadline_after or 'Z' in deadline_after:
                             deadline_dt = datetime.fromisoformat(deadline_after.replace('Z', '+00:00'))
                             if deadline_dt.tzinfo:
-                                deadline_dt = deadline_dt.replace(tzinfo=None)
+                                # ВАЖНО: Конвертируем в UTC перед удалением временной зоны
+                                deadline_dt = deadline_dt.astimezone(timezone.utc).replace(tzinfo=None)
                         else:
                             deadline_dt = datetime.strptime(deadline_after, '%Y-%m-%d %H:%M:%S')
                     else:
                         deadline_dt = deadline_after
                     
-                    if deadline_dt < datetime.now():
+                    now = datetime.now()
+                    is_overdue = deadline_dt < now
+                    logger.debug(f"🔍 Проверка просроченности дедлайна (без предыдущего состояния): deadline={deadline_dt}, current={now}, overdue={is_overdue}")
+                    if is_overdue:
                         changes['deadline_overdue'] = True
                         changes['deadline_after'] = deadline_after
                         changes['changes'].append('дедлайн просрочен')

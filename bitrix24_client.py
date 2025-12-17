@@ -1876,6 +1876,8 @@ class Bitrix24Client:
         Returns:
             True если задача просрочена, False иначе
         """
+        from datetime import timezone
+        
         if current_time is None:
             current_time = datetime.now()
         
@@ -1892,7 +1894,9 @@ class Bitrix24Client:
             if 'T' in deadline_str or 'Z' in deadline_str:
                 deadline_dt = datetime.fromisoformat(deadline_str.replace('Z', '+00:00'))
                 if deadline_dt.tzinfo:
-                    deadline_dt = deadline_dt.replace(tzinfo=None)
+                    # ВАЖНО: Конвертируем в UTC перед удалением временной зоны
+                    # Это гарантирует правильное сравнение с datetime.now()
+                    deadline_dt = deadline_dt.astimezone(timezone.utc).replace(tzinfo=None)
             # Формат YYYY-MM-DD HH:MI:SS
             elif ' ' in deadline_str:
                 deadline_dt = datetime.strptime(deadline_str, '%Y-%m-%d %H:%M:%S')
@@ -1903,7 +1907,9 @@ class Bitrix24Client:
                 deadline_dt = deadline_dt.replace(hour=23, minute=59, second=59)
             
             if deadline_dt:
-                return deadline_dt < current_time
+                is_overdue = deadline_dt < current_time
+                logger.debug(f"🔍 Проверка просроченности задачи {task.get('id')}: deadline={deadline_dt}, current={current_time}, overdue={is_overdue}")
+                return is_overdue
             
         except Exception as e:
             logger.debug(f"Ошибка при парсинге дедлайна '{deadline_str}' для задачи {task.get('id')}: {e}")
