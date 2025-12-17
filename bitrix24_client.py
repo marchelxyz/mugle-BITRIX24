@@ -2432,20 +2432,61 @@ class Bitrix24Client:
         return None
     
     def _try_get_message_method8(self, chat_id: int, message_id: int) -> Optional[Dict]:
-        """Метод 8: im.dialog.messages.get"""
+        """
+        Метод 8: im.dialog.messages.get
+        
+        Получает сообщения диалога через API im.dialog.messages.get.
+        Пробует разные форматы DIALOG_ID: chat{ID}, {ID}, числовой формат.
+        
+        См. документацию: IM_DIALOG_MESSAGES_GET_API.md
+        """
         try:
-            result = self._make_request("im.dialog.messages.get", {
-                "DIALOG_ID": chat_id,
-                "LIMIT": 100
-            })
-            if result and result.get("result"):
-                messages = result["result"] if isinstance(result["result"], list) else [result["result"]]
-                for msg in messages:
-                    msg_id = msg.get("id") or msg.get("ID")
-                    if msg_id and str(msg_id) == str(message_id):
-                        return msg
-        except:
-            pass
+            # Пробуем разные форматы DIALOG_ID согласно документации
+            dialog_id_variants = [
+                f"chat{chat_id}",  # Формат chat29 (рекомендуемый для чатов)
+                str(chat_id),       # Формат 29
+                chat_id             # Числовой формат
+            ]
+            
+            for dialog_id in dialog_id_variants:
+                try:
+                    result = self._make_request("im.dialog.messages.get", {
+                        "DIALOG_ID": dialog_id,
+                        "LIMIT": 100
+                    })
+                    
+                    if result and result.get("result"):
+                        result_data = result["result"]
+                        
+                        # Извлекаем массив сообщений (может быть в поле messages или напрямую)
+                        messages = None
+                        if isinstance(result_data, dict):
+                            messages = result_data.get("messages") or result_data.get("MESSAGES")
+                            if not messages and isinstance(result_data.get("result"), list):
+                                messages = result_data.get("result")
+                        elif isinstance(result_data, list):
+                            messages = result_data
+                        
+                        if messages and isinstance(messages, list):
+                            # Ищем нужное сообщение по ID
+                            for msg in messages:
+                                msg_id = msg.get("id") or msg.get("ID")
+                                if msg_id and str(msg_id) == str(message_id):
+                                    return msg
+                            
+                            # Если нашли сообщения, но не нашли нужное, пробуем следующий формат
+                            if messages:
+                                break
+                except Exception as e:
+                    # Если ошибка доступа или диалог не найден, пробуем следующий формат
+                    error_str = str(e)
+                    if "ACCESS_ERROR" in error_str or "DIALOG_ID_EMPTY" in error_str or "DIALOG_NOT_FOUND" in error_str or "404" in error_str:
+                        continue
+                    # Для других ошибок логируем и пробуем следующий формат
+                    logger.debug(f"Ошибка при вызове im.dialog.messages.get с DIALOG_ID={dialog_id}: {e}")
+                    continue
+        except Exception as e:
+            logger.debug(f"Ошибка в _try_get_message_method8: {e}")
         return None
     
     def _try_get_message_method9(self, chat_id: int, message_id: int) -> Optional[Dict]:
