@@ -2481,16 +2481,24 @@ def main():
                         # Получаем все подразделения из Bitrix24
                         departments = bitrix_client.get_all_departments()
                         
+                        logger.info(f"📋 Загружено {len(departments) if departments else 0} подразделений из Bitrix24 для Mini App")
+                        
                         # Форматируем список подразделений
                         departments_list = []
                         for dept in departments:
+                            dept_id = dept.get('ID')
                             name = dept.get('NAME', '').strip()
                             # Пропускаем подразделения без имени
                             if name:
-                                departments_list.append({
-                                    'id': int(dept.get('ID')),
-                                    'name': name
-                                })
+                                try:
+                                    dept_id_int = int(dept_id)
+                                    departments_list.append({
+                                        'id': dept_id_int,
+                                        'name': name
+                                    })
+                                    logger.debug(f"  - Подразделение: ID={dept_id_int}, NAME={name}")
+                                except (ValueError, TypeError) as e:
+                                    logger.warning(f"⚠️ Пропущено подразделение с неверным ID: {dept_id} ({e})")
                         
                         # Сортируем по имени для удобства
                         departments_list.sort(key=lambda x: x['name'])
@@ -2567,6 +2575,18 @@ def main():
                             description = data.get('description', '').strip()
                             department_id = int(data.get('department_id')) if data.get('department_id') else None
                             
+                            # Логируем информацию о подразделении для отладки
+                            if department_id:
+                                logger.info(f"📋 Получен department_id из формы: {department_id}")
+                                # Проверяем, что подразделение существует
+                                dept_info = bitrix_client.get_department_by_id(department_id)
+                                if dept_info:
+                                    logger.info(f"✅ Подразделение найдено: ID={department_id}, NAME={dept_info.get('NAME', 'N/A')}")
+                                else:
+                                    logger.warning(f"⚠️ Подразделение с ID={department_id} не найдено в Bitrix24")
+                            else:
+                                logger.debug("ℹ️ department_id не указан в запросе")
+                            
                             # Парсим responsible_ids из JSON строки
                             try:
                                 responsible_ids = json.loads(responsible_ids_str) if isinstance(responsible_ids_str, str) else responsible_ids_str
@@ -2592,6 +2612,22 @@ def main():
                             deadline = data.get('deadline')
                             description = data.get('description', '').strip()
                             department_id = data.get('department_id')
+                            
+                            # Логируем информацию о подразделении для отладки
+                            if department_id:
+                                department_id = int(department_id) if isinstance(department_id, (str, int)) else None
+                                if department_id:
+                                    logger.info(f"📋 Получен department_id из JSON: {department_id}")
+                                    # Проверяем, что подразделение существует
+                                    dept_info = bitrix_client.get_department_by_id(department_id)
+                                    if dept_info:
+                                        logger.info(f"✅ Подразделение найдено: ID={department_id}, NAME={dept_info.get('NAME', 'N/A')}")
+                                    else:
+                                        logger.warning(f"⚠️ Подразделение с ID={department_id} не найдено в Bitrix24")
+                                else:
+                                    logger.debug("ℹ️ department_id не указан или имеет неверный формат")
+                            else:
+                                logger.debug("ℹ️ department_id не указан в запросе")
                         
                         if not token:
                             return web.json_response({'error': 'Токен не указан'}, status=400)
@@ -2622,6 +2658,12 @@ def main():
                         
                         if not final_responsible_ids:
                             return web.json_response({'error': 'Исполнитель не указан'}, status=400)
+                        
+                        # Логируем финальное значение department_id перед созданием задачи
+                        if department_id:
+                            logger.info(f"🚀 Создание задачи с department_id={department_id}")
+                        else:
+                            logger.debug("🚀 Создание задачи без указания подразделения/проекта")
                         
                         # Создаем задачу с файлами
                         # Пробуем сначала передать файлы напрямую при создании задачи

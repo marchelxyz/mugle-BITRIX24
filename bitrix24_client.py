@@ -4,6 +4,7 @@
 import requests
 import os
 import logging
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
@@ -165,18 +166,52 @@ class Bitrix24Client:
             # Не нужно добавлять 3 часа, так как время уже в правильном формате
             task_data["fields"]["DEADLINE"] = deadline
         
-        # Добавляем подразделение, если указано
+        # Добавляем подразделение/проект, если указано
         # Примечание: В Bitrix24 для задач может использоваться поле GROUP_ID (для группы) 
-        # или пользовательское поле типа UF_DEPARTMENT или UF_CRM_TASK_DEPARTMENT
-        # Если ваше поле называется по-другому, измените название поля ниже
+        # или пользовательское поле типа UF_DEPARTMENT, UF_CRM_TASK_DEPARTMENT, UF_PROJECT и т.д.
+        # Если ваше поле называется по-другому, настройте его через переменную окружения BITRIX24_PROJECT_FIELD_NAME
         # Для создания пользовательского поля используйте API user.userfield.add или настройте через интерфейс Bitrix24
         if department_id:
-            # Используем GROUP_ID для подразделения (стандартное поле в Bitrix24)
-            # Если в вашем Bitrix24 используется другое поле, замените GROUP_ID на нужное
-            task_data["fields"]["GROUP_ID"] = department_id
+            # Определяем поле для проекта/подразделения
+            # По умолчанию используется GROUP_ID, но можно настроить через переменную окружения
+            project_field_name = os.getenv("BITRIX24_PROJECT_FIELD_NAME", "GROUP_ID")
+            
+            logger.info(f"📋 Установка проекта/подразделения для задачи: поле={project_field_name}, значение={department_id}")
+            
+            # Используем настроенное поле для проекта/подразделения
+            # Если в вашем Bitrix24 используется другое поле, установите BITRIX24_PROJECT_FIELD_NAME
+            task_data["fields"][project_field_name] = department_id
+            
+            logger.debug(f"✅ Поле {project_field_name} установлено в {department_id} для задачи")
+        
+        # Логируем данные задачи перед отправкой
+        logger.debug(f"📤 Отправка данных задачи в Bitrix24: {json.dumps(task_data, ensure_ascii=False, indent=2)}")
         
         # Сначала создаем задачу без файлов
         result = self._make_request("tasks.task.add", task_data)
+        
+        # Логируем результат создания задачи
+        if result.get("result") and result["result"].get("task"):
+            task_id = result["result"]["task"]["id"]
+            logger.info(f"✅ Задача {task_id} успешно создана")
+            
+            # Проверяем, что поле проекта установлено правильно
+            if department_id:
+                project_field_name = os.getenv("BITRIX24_PROJECT_FIELD_NAME", "GROUP_ID")
+                # Получаем информацию о созданной задаче для проверки
+                try:
+                    task_info_result = self._make_request("tasks.task.get", {"taskId": task_id})
+                    if task_info_result.get("result") and task_info_result["result"].get("task"):
+                        task_info = task_info_result["result"]["task"]
+                        actual_project_value = task_info.get(project_field_name) or task_info.get("fields", {}).get(project_field_name)
+                        if actual_project_value:
+                            logger.info(f"✅ Поле проекта {project_field_name} установлено в задаче {task_id}: {actual_project_value}")
+                            if str(actual_project_value) != str(department_id):
+                                logger.warning(f"⚠️ ВНИМАНИЕ: Ожидалось значение {department_id}, но в задаче установлено {actual_project_value}")
+                        else:
+                            logger.warning(f"⚠️ Поле проекта {project_field_name} не найдено в созданной задаче {task_id}")
+                except Exception as e:
+                    logger.debug(f"Не удалось проверить поле проекта в задаче {task_id}: {e}")
         
         # Если задача создана успешно и есть файлы для прикрепления
         if result.get("result") and result["result"].get("task"):

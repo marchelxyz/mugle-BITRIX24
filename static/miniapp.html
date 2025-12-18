@@ -773,6 +773,7 @@
                         option.value = dept.id;
                         option.textContent = dept.name;
                         departmentSelect.appendChild(option);
+                        console.log(`Добавлено подразделение в select: ID=${dept.id}, NAME=${dept.name}`);
                     });
                     
                     // Восстанавливаем выбранное значение из сессии или уже выбранное
@@ -1142,6 +1143,10 @@
             }
             
             const departmentId = document.getElementById('departmentId').value;
+            const departmentSelect = document.getElementById('departmentSelect');
+            const selectedDepartmentName = departmentSelect.options[departmentSelect.selectedIndex]?.text || 'Не выбрано';
+            
+            console.log(`Отправка формы: departmentId=${departmentId}, название="${selectedDepartmentName}"`);
             
             // Преобразуем строку ID в массив
             const responsibleIdsArray = responsibleIds.split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id));
