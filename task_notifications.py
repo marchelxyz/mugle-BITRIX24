@@ -647,7 +647,10 @@ class TaskNotificationService:
                     changes['changes'].append('удален срок сдачи')
             
             # Проверяем изменение статуса
-            if (status_before is not None or status_after is not None) and str(status_before) != str(status_after):
+            # Изменение считается только если оба значения не None и они различаются
+            # Если одно None, а другое нет - это не изменение (может быть первое сохранение)
+            logger.debug(f"🔍 Проверка изменения статуса: before={status_before}, after={status_after}")
+            if status_before is not None and status_after is not None and str(status_before) != str(status_after):
                 changes['status_changed'] = True
                 changes['status_before'] = status_before
                 changes['status_after'] = status_after
@@ -657,18 +660,33 @@ class TaskNotificationService:
                     changes['changes'].append(f'статус изменен на "{status_name_after}"')
                 else:
                     changes['changes'].append('статус изменен')
+                logger.debug(f"✅ Обнаружено изменение статуса: {status_before} -> {status_after}")
+            elif status_before is None or status_after is None:
+                logger.debug(f"⏭️ Пропуск проверки статуса: одно из значений None (before={status_before}, after={status_after})")
             
             # Проверяем изменение ответственного
-            if (responsible_before is not None or responsible_after is not None) and str(responsible_before) != str(responsible_after):
+            # Изменение считается только если оба значения не None и они различаются
+            # Если одно None, а другое нет - это не изменение (может быть первое сохранение)
+            logger.debug(f"🔍 Проверка изменения исполнителя: before={responsible_before}, after={responsible_after}")
+            if responsible_before is not None and responsible_after is not None and str(responsible_before) != str(responsible_after):
                 changes['responsible_changed'] = True
-                changes['responsible_before'] = str(responsible_before) if responsible_before else None
-                changes['responsible_after'] = str(responsible_after) if responsible_after else None
+                changes['responsible_before'] = str(responsible_before)
+                changes['responsible_after'] = str(responsible_after)
                 changes['changes'].append('изменен исполнитель')
+                logger.debug(f"✅ Обнаружено изменение исполнителя: {responsible_before} -> {responsible_after}")
+            elif responsible_before is None or responsible_after is None:
+                logger.debug(f"⏭️ Пропуск проверки исполнителя: одно из значений None (before={responsible_before}, after={responsible_after})")
             
             # Проверяем изменение названия
-            if (title_before is not None or title_after is not None) and title_before != title_after:
+            # Изменение считается только если оба значения не None и они различаются
+            # Если одно None, а другое нет - это не изменение (может быть первое сохранение)
+            logger.debug(f"🔍 Проверка изменения названия: before={title_before}, after={title_after}")
+            if title_before is not None and title_after is not None and title_before != title_after:
                 changes['title_changed'] = True
                 changes['changes'].append('изменено название')
+                logger.debug(f"✅ Обнаружено изменение названия: {title_before} -> {title_after}")
+            elif title_before is None or title_after is None:
+                logger.debug(f"⏭️ Пропуск проверки названия: одно из значений None (before={title_before}, after={title_after})")
         else:
             # Нет предыдущего состояния - проверяем текущее состояние
             # Проверяем, просрочен ли дедлайн (даже если он не был изменен)
