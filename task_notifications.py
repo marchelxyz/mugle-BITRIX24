@@ -967,7 +967,21 @@ class TaskNotificationService:
                 await self._send_notification(overdue_message, telegram_ids)
                 self._mark_notification_sent(overdue_notification_key, task_id_int, "overdue")
             
+            # НЕ отправляем системные уведомления об изменениях задач (изменен срок, статус и т.д.)
+            # Отправляем только уведомления о просроченных задачах и обычные комментарии
+            if 'ONTASKUPDATE' in event_upper:
+                logger.debug(f"⏭️ Пропуск системного уведомления об обновлении задачи {task_id_int} (изменен срок/статус/исполнитель и т.д.)")
+                # Сохраняем состояние задачи в БД для следующего сравнения, но не отправляем уведомление
+                if DATABASE_AVAILABLE and task_info:
+                    try:
+                        database.save_task_state(task_id_int, task_info)
+                        logger.debug(f"Сохранено состояние задачи {task_id_int} в БД")
+                    except Exception as e:
+                        logger.debug(f"Ошибка при сохранении состояния задачи {task_id_int}: {e}")
+                return
+            
             # Отправляем уведомление об обновлении только если оно еще не было отправлено
+            # (для других типов событий, например ONTASKDELETE)
             if not notification_already_sent:
                 await self._send_notification(message, telegram_ids)
                 self._mark_notification_sent(notification_key, task_id_int, notification_type, event_upper)
