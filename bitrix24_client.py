@@ -99,10 +99,13 @@ class Bitrix24Client:
         try:
             # Парсим deadline как UTC время
             deadline_dt = datetime.strptime(deadline, "%Y-%m-%d %H:%M:%S")
+            logger.debug(f"🔧 Корректировка времени deadline: {deadline} (UTC) -> добавляем 3 часа")
             # Добавляем 3 часа
             adjusted_dt = deadline_dt + timedelta(hours=3)
+            adjusted_str = adjusted_dt.strftime("%Y-%m-%d %H:%M:%S")
+            logger.debug(f"🔧 Результат корректировки: {adjusted_str} (будет интерпретировано Bitrix как МСК)")
             # Возвращаем в том же формате
-            return adjusted_dt.strftime("%Y-%m-%d %H:%M:%S")
+            return adjusted_str
         except Exception as e:
             logger.warning(f"Ошибка при корректировке времени deadline '{deadline}': {e}. Используется исходное значение.")
             return deadline

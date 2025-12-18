@@ -1079,14 +1079,14 @@
             const [year, month, day] = datePart.split('-').map(Number);
             const [hours, minutes] = timePart.split(':').map(Number);
             
-            // Создаем дату, интерпретируя введенное время как МСК время
-            // Пользователь выбирает время в МСК (например, 15:00 МСК)
-            // Конвертируем МСК в правильное UTC время (15:00 МСК = 12:00 UTC)
-            // Python метод _adjust_deadline_time добавит 3 часа к этому UTC времени,
-            // чтобы компенсировать то, что Bitrix24 интерпретирует UTC как МСК
-            const mskDate = new Date(Date.UTC(year, month - 1, day, hours, minutes));
-            // Вычитаем 3 часа, чтобы получить правильное UTC время из МСК времени
-            const utcDate = new Date(mskDate.getTime() - (3 * 60 * 60 * 1000));
+            // datetime-local возвращает локальное время браузера
+            // Если браузер в МСК, то это уже МСК время
+            // Нужно правильно конвертировать МСК в UTC: вычитаем 3 часа
+            // Создаем UTC дату, интерпретируя переданные часы как МСК время
+            // Например: 18:00 МСК = 15:00 UTC
+            const mskOffset = 3 * 60 * 60 * 1000; // 3 часа в миллисекундах
+            // Создаем дату как UTC, но интерпретируем часы как МСК
+            const utcDate = new Date(Date.UTC(year, month - 1, day, hours, minutes) - mskOffset);
             
             return utcDate;
         }
