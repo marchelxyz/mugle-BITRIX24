@@ -68,7 +68,7 @@ bitrix_client = Bitrix24Client(
 )
 
 # Состояния диалога
-WAITING_FOR_RESPONSIBLES, WAITING_FOR_DEADLINE, WAITING_FOR_DESCRIPTION, WAITING_FOR_FILES = range(4)
+WAITING_FOR_RESPONSIBLES, WAITING_FOR_DEADLINE, WAITING_FOR_DESCRIPTION = range(3)
 
 # Хранилище соответствий Telegram User ID -> Bitrix24 User ID
 # Используется как fallback если PostgreSQL недоступен
@@ -1338,7 +1338,6 @@ async def start_task_creation(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     # Сохраняем данные задачи в контексте
     context.user_data['task_title'] = task_title
-    context.user_data['task_files'] = []
     
     # Получаем thread_id (ID темы в супергруппе), если сообщение отправлено в теме
     thread_id = None
@@ -1497,12 +1496,8 @@ async def handle_description(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     context.user_data['description'] = description
     
-    # Задаем последний вопрос
-    await update.message.reply_text(
-        "4️⃣ Прикрепите файлы (если нужно, отправьте файлы, или отправьте '-' чтобы пропустить)"
-    )
-    
-    return WAITING_FOR_FILES
+    # Сразу создаем задачу после получения описания
+    return await create_task(update, context)
 
 
 async def handle_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2079,12 +2074,6 @@ def main():
             ],
             WAITING_FOR_DESCRIPTION: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_description)
-            ],
-            WAITING_FOR_FILES: [
-                MessageHandler(
-                    filters.TEXT | filters.Document.ALL | filters.PHOTO,
-                    handle_files
-                )
             ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
