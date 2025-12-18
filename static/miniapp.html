@@ -1072,8 +1072,8 @@
         
         // Функция для парсинга datetime-local значения
         // datetime-local всегда возвращает локальное время браузера
-        // Но мы интерпретируем его как МСК время и конвертируем в UTC
-        function parseLocalDateTimeToUTC(dateTimeString) {
+        // Интерпретируем его как МСК время и передаем как есть (без конвертаций)
+        function parseLocalDateTimeToMsk(dateTimeString) {
             // Парсим строку формата YYYY-MM-DDTHH:mm
             const [datePart, timePart] = dateTimeString.split('T');
             const [year, month, day] = datePart.split('-').map(Number);
@@ -1081,14 +1081,11 @@
             
             // datetime-local возвращает локальное время браузера
             // Если браузер в МСК, то это уже МСК время
-            // Нужно правильно конвертировать МСК в UTC: вычитаем 3 часа
-            // Создаем UTC дату, интерпретируя переданные часы как МСК время
-            // Например: 18:00 МСК = 15:00 UTC
-            const mskOffset = 3 * 60 * 60 * 1000; // 3 часа в миллисекундах
-            // Создаем дату как UTC, но интерпретируем часы как МСК
-            const utcDate = new Date(Date.UTC(year, month - 1, day, hours, minutes) - mskOffset);
+            // Передаем время как есть - Bitrix интерпретирует его как МСК
+            // Форматируем в формат YYYY-MM-DD HH:MM:SS
+            const formattedDate = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')} ${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00`;
             
-            return utcDate;
+            return formattedDate;
         }
         
         // Установка дедлайна через заготовку (количество дней)
@@ -1103,15 +1100,11 @@
             // Устанавливаем время на 18:00 МСК (конец рабочего дня)
             deadlineMsk.setHours(18, 0, 0, 0);
             
-            // Для datetime-local нужно преобразовать МСК время в локальное время браузера
+            // Для datetime-local используем МСК время напрямую
             // datetime-local работает с локальным временем браузера
-            // Получаем UTC время из МСК времени
-            const mskOffset = 3 * 60 * 60 * 1000; // 3 часа в миллисекундах
-            const utcTime = deadlineMsk.getTime() - mskOffset;
-            const localDate = new Date(utcTime);
-            
+            // Если браузер в МСК, то просто используем МСК время
             // Форматируем для input[type="datetime-local"]
-            const formattedDate = formatLocalDateTime(localDate);
+            const formattedDate = formatLocalDateTime(deadlineMsk);
             
             // Устанавливаем значение в поле
             document.getElementById('deadline').value = formattedDate;
@@ -1162,12 +1155,11 @@
             
             // Форматируем deadline если указан
             // datetime-local всегда возвращает локальное время (МСК)
-            // Конвертируем МСК в UTC для отправки на сервер
+            // Передаем время как есть - Bitrix интерпретирует его как МСК
             let deadlineValue = document.getElementById('deadline').value;
             if (deadlineValue) {
-                // Парсим введенное время как локальное (МСК) и конвертируем в UTC
-                const utcDate = parseLocalDateTimeToUTC(deadlineValue);
-                deadlineValue = utcDate.toISOString().slice(0, 19).replace('T', ' ');
+                // Парсим введенное время как локальное (МСК) и передаем как есть
+                deadlineValue = parseLocalDateTimeToMsk(deadlineValue);
             }
             
             // Объединяем описание с оригинальным сообщением
