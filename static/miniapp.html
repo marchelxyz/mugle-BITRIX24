@@ -1181,12 +1181,16 @@
             }
             
             try {
+                // Собираем имена исполнителей из выбранных пользователей
+                const responsibleNames = selectedResponsibles.map(u => u.name);
+                
                 // Используем JSON для отправки данных
                 const formData = {
                     token: token,
                     title: document.getElementById('taskTitle').value,
                     creator_id: parseInt(document.getElementById('creatorId').value),
                     responsible_ids: responsibleIdsArray,
+                    responsible_names: responsibleNames, // Отправляем имена для ускорения
                     deadline: deadlineValue || null,
                     description: descriptionValue || '',
                     department_id: departmentId ? parseInt(departmentId) : null
