@@ -8,7 +8,6 @@ import logging
 import threading
 import asyncio
 import secrets
-import concurrent.futures
 from datetime import datetime, timedelta, timezone
 import time
 
@@ -2546,99 +2545,78 @@ def main():
                             # Получаем ссылку на задачу
                             task_url = bitrix_client.get_task_url(task_id, creator_id)
                             
-                            # Сохраняем данные для фоновой отправки сообщения
+                            # Получаем информацию о задаче для сообщения
+                            responsible_names = []
+                            for rid in final_responsible_ids:
+                                resp_info = bitrix_client.get_user_by_id(rid)
+                                if resp_info:
+                                    name = f"{resp_info.get('NAME', '')} {resp_info.get('LAST_NAME', '')}".strip()
+                                    if name:
+                                        responsible_names.append(name)
+                            
+                            # Формируем текст сообщения
+                            response_text = (
+                                f"✅ Задача создана!\n\n"
+                                f"📋 Задача: {title}\n"
+                            )
+                            
+                            if responsible_names:
+                                if len(responsible_names) == 1:
+                                    response_text += f"👤 Ответственный: {responsible_names[0]}\n"
+                                else:
+                                    response_text += f"👥 Ответственные ({len(responsible_names)}): {', '.join(responsible_names)}\n"
+                            
+                            if deadline:
+                                response_text += f"📅 Срок: {deadline}\n"
+                            
+                            if description:
+                                response_text += f"📝 Описание: {description[:100]}...\n" if len(description) > 100 else f"📝 Описание: {description}\n"
+                            
+                            if files:
+                                response_text += f"📎 Прикреплено файлов: {len(files)}\n"
+                            
+                            response_text += f"🆔 ID задачи: {task_id}\n\n"
+                            response_text += f"🔗 Ссылка на задачу: {task_url}"
+                            
+                            # Отправляем сообщение в чат с ссылкой на задачу
                             chat_id = session_data.get('chat_id')
                             message_id = session_data.get('message_id')
                             proposal_message_id = session_data.get('proposal_message_id')
                             
-                            # Сразу возвращаем ответ пользователю для ускорения
-                            # Отправку сообщения делаем в фоне
-                            response_data = {
-                                'success': True,
-                                'task_id': task_id,
-                                'task_url': task_url
-                            }
+                            # Удаляем сообщение "Предложение создать задачу", если оно было сохранено
+                            if chat_id and proposal_message_id:
+                                try:
+                                    await application.bot.delete_message(
+                                        chat_id=chat_id,
+                                        message_id=proposal_message_id
+                                    )
+                                    logger.info(f"Сообщение 'Предложение создать задачу' (ID: {proposal_message_id}) успешно удалено")
+                                except Exception as delete_error:
+                                    logger.warning(f"Не удалось удалить сообщение 'Предложение создать задачу': {delete_error}")
+                                    # Продолжаем работу, даже если не удалось удалить сообщение
                             
-                            # Удаляем сессию сразу после создания задачи
+                            if chat_id:
+                                try:
+                                    # Отправляем сообщение в чат
+                                    await application.bot.send_message(
+                                        chat_id=chat_id,
+                                        text=response_text,
+                                        reply_to_message_id=message_id
+                                    )
+                                    logger.info(f"Сообщение с ссылкой на задачу отправлено в чат {chat_id}")
+                                except Exception as send_error:
+                                    logger.error(f"Ошибка при отправке сообщения в чат: {send_error}", exc_info=True)
+                                    # Продолжаем работу, даже если не удалось отправить сообщение
+                            
+                            # Удаляем сессию после успешного создания
                             if session_key in application.bot_data:
                                 del application.bot_data[session_key]
                             
-                            # Запускаем фоновую задачу для отправки сообщения
-                            async def send_notification_background():
-                                """Фоновая задача для отправки уведомления о создании задачи"""
-                                try:
-                                    # Получаем информацию о пользователях для сообщения параллельно
-                                    # Используем ThreadPoolExecutor для параллельных запросов к API
-                                    def get_user_name(user_id):
-                                        """Получение имени пользователя (синхронная функция для executor)"""
-                                        resp_info = bitrix_client.get_user_by_id(user_id)
-                                        if resp_info:
-                                            name = f"{resp_info.get('NAME', '')} {resp_info.get('LAST_NAME', '')}".strip()
-                                            return name if name else None
-                                        return None
-                                    
-                                    # Получаем имена пользователей параллельно
-                                    responsible_names = []
-                                    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                                        future_to_user = {executor.submit(get_user_name, rid): rid for rid in final_responsible_ids}
-                                        for future in concurrent.futures.as_completed(future_to_user):
-                                            name = future.result()
-                                            if name:
-                                                responsible_names.append(name)
-                                    
-                                    # Формируем текст сообщения
-                                    response_text = (
-                                        f"✅ Задача создана!\n\n"
-                                        f"📋 Задача: {title}\n"
-                                    )
-                                    
-                                    if responsible_names:
-                                        if len(responsible_names) == 1:
-                                            response_text += f"👤 Ответственный: {responsible_names[0]}\n"
-                                        else:
-                                            response_text += f"👥 Ответственные ({len(responsible_names)}): {', '.join(responsible_names)}\n"
-                                    
-                                    if deadline:
-                                        response_text += f"📅 Срок: {deadline}\n"
-                                    
-                                    if description:
-                                        response_text += f"📝 Описание: {description[:100]}...\n" if len(description) > 100 else f"📝 Описание: {description}\n"
-                                    
-                                    if files:
-                                        response_text += f"📎 Прикреплено файлов: {len(files)}\n"
-                                    
-                                    response_text += f"🆔 ID задачи: {task_id}\n\n"
-                                    response_text += f"🔗 Ссылка на задачу: {task_url}"
-                                    
-                                    # Удаляем сообщение "Предложение создать задачу", если оно было сохранено
-                                    if chat_id and proposal_message_id:
-                                        try:
-                                            await application.bot.delete_message(
-                                                chat_id=chat_id,
-                                                message_id=proposal_message_id
-                                            )
-                                            logger.info(f"Сообщение 'Предложение создать задачу' (ID: {proposal_message_id}) успешно удалено")
-                                        except Exception as delete_error:
-                                            logger.warning(f"Не удалось удалить сообщение 'Предложение создать задачу': {delete_error}")
-                                    
-                                    # Отправляем сообщение в чат
-                                    if chat_id:
-                                        try:
-                                            await application.bot.send_message(
-                                                chat_id=chat_id,
-                                                text=response_text,
-                                                reply_to_message_id=message_id
-                                            )
-                                            logger.info(f"Сообщение с ссылкой на задачу отправлено в чат {chat_id}")
-                                        except Exception as send_error:
-                                            logger.error(f"Ошибка при отправке сообщения в чат: {send_error}", exc_info=True)
-                                except Exception as bg_error:
-                                    logger.error(f"Ошибка в фоновой задаче отправки уведомления: {bg_error}", exc_info=True)
-                            
-                            # Запускаем фоновую задачу (не ждем её завершения)
-                            asyncio.create_task(send_notification_background())
-                            
-                            return web.json_response(response_data)
+                            return web.json_response({
+                                'success': True,
+                                'task_id': task_id,
+                                'task_url': task_url
+                            })
                         else:
                             error_msg = result.get('error_description', 'Неизвестная ошибка')
                             return web.json_response({'error': f'Ошибка создания задачи: {error_msg}'}, status=500)
