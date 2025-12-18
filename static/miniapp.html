@@ -126,6 +126,16 @@
             font-size: 14px;
             color: var(--tg-theme-text-color, #000000);
             border-left: 3px solid var(--tg-theme-button-color, #3390ec);
+            word-wrap: break-word;
+            word-break: break-word;
+            overflow-wrap: break-word;
+        }
+        
+        .original-message #originalMessage {
+            word-wrap: break-word;
+            word-break: break-word;
+            overflow-wrap: break-word;
+            white-space: pre-wrap;
         }
         
         .original-message-label {
@@ -711,6 +721,7 @@
                 // Скрываем индикатор загрузки и показываем форму СРАЗУ после загрузки сессии
                 // Списки пользователей и подразделений загрузим параллельно в фоне
                 document.getElementById('loading').classList.remove('show');
+                document.getElementById('loading').style.display = 'none';
                 document.getElementById('taskForm').style.display = 'block';
                 console.log('Форма отображена');
                 
@@ -1048,50 +1059,51 @@
             return new Date(utcDate.getTime() + moscowOffset);
         }
         
-        // Функция для форматирования даты в МСК для input[type="datetime-local"]
-        // date должен быть объектом Date, представляющим МСК время
-        function formatMoscowDateTime(date) {
-            // date уже представляет МСК время, форматируем его
-            const year = date.getUTCFullYear();
-            const month = String(date.getUTCMonth() + 1).padStart(2, '0');
-            const day = String(date.getUTCDate()).padStart(2, '0');
-            const hours = String(date.getUTCHours()).padStart(2, '0');
-            const minutes = String(date.getUTCMinutes()).padStart(2, '0');
+        // Функция для форматирования даты для input[type="datetime-local"]
+        // datetime-local всегда работает с локальным временем браузера
+        function formatLocalDateTime(date) {
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            const hours = String(date.getHours()).padStart(2, '0');
+            const minutes = String(date.getMinutes()).padStart(2, '0');
             return `${year}-${month}-${day}T${hours}:${minutes}`;
         }
         
-        // Функция для парсинга datetime-local значения как МСК времени
-        // Входная строка интерпретируется как МСК, возвращается UTC Date
-        function parseMoscowDateTime(dateTimeString) {
-            // Парсим строку формата YYYY-MM-DDTHH:mm
+        // Функция для парсинга datetime-local значения
+        // datetime-local всегда возвращает локальное время браузера (МСК)
+        // Конвертируем МСК в UTC для отправки на сервер (добавляем 3 часа к UTC)
+        function parseLocalDateTimeToUTC(dateTimeString) {
+            // Парсим строку формата YYYY-MM-DDTHH:mm как локальное время
             const [datePart, timePart] = dateTimeString.split('T');
             const [year, month, day] = datePart.split('-').map(Number);
             const [hours, minutes] = timePart.split(':').map(Number);
             
-            // Интерпретируем введенные значения как МСК время
-            // МСК = UTC+3, поэтому создаем UTC дату, вычитая 3 часа
-            const moscowDate = new Date(Date.UTC(year, month - 1, day, hours, minutes));
-            // Вычитаем 3 часа для получения UTC
-            const utcDate = new Date(moscowDate.getTime() - (3 * 60 * 60 * 1000));
+            // Создаем дату в локальном времени (МСК)
+            const localDate = new Date(year, month - 1, day, hours, minutes);
+            
+            // Конвертируем МСК в UTC: вычитаем 3 часа
+            // МСК = UTC+3, поэтому UTC = МСК - 3 часа
+            const utcDate = new Date(localDate.getTime() - (3 * 60 * 60 * 1000));
             
             return utcDate;
         }
         
         // Установка дедлайна через заготовку (количество дней)
         function setDeadlineShortcut(days) {
-            // Получаем текущее время в МСК
-            const nowMoscow = getMoscowTime();
+            // Получаем текущее локальное время (МСК)
+            const now = new Date();
             
-            // Добавляем дни (работаем с МСК временем)
-            const deadlineMoscow = new Date(nowMoscow);
-            deadlineMoscow.setUTCDate(nowMoscow.getUTCDate() + days);
+            // Добавляем дни
+            const deadlineLocal = new Date(now);
+            deadlineLocal.setDate(now.getDate() + days);
             
             // Устанавливаем время на 18:00 МСК (конец рабочего дня)
-            deadlineMoscow.setUTCHours(18, 0, 0, 0);
+            deadlineLocal.setHours(18, 0, 0, 0);
             
             // Форматируем для input[type="datetime-local"]
-            // deadlineMoscow уже представляет МСК время
-            const formattedDate = formatMoscowDateTime(deadlineMoscow);
+            // datetime-local работает с локальным временем, поэтому просто форматируем локальное время
+            const formattedDate = formatLocalDateTime(deadlineLocal);
             
             // Устанавливаем значение в поле
             document.getElementById('deadline').value = formattedDate;
@@ -1104,11 +1116,11 @@
                 15: '15 дней',
                 30: 'месяц'
             };
-            const day = String(deadlineMoscow.getUTCDate()).padStart(2, '0');
-            const month = String(deadlineMoscow.getUTCMonth() + 1).padStart(2, '0');
-            const year = deadlineMoscow.getUTCFullYear();
-            const hours = String(deadlineMoscow.getUTCHours()).padStart(2, '0');
-            const minutes = String(deadlineMoscow.getUTCMinutes()).padStart(2, '0');
+            const day = String(deadlineLocal.getDate()).padStart(2, '0');
+            const month = String(deadlineLocal.getMonth() + 1).padStart(2, '0');
+            const year = deadlineLocal.getFullYear();
+            const hours = String(deadlineLocal.getHours()).padStart(2, '0');
+            const minutes = String(deadlineLocal.getMinutes()).padStart(2, '0');
             tg.showAlert(`✅ Срок установлен: через ${dayLabels[days] || days + ' дней'} (${day}.${month}.${year} в ${hours}:${minutes} МСК)`);
         }
         
@@ -1140,12 +1152,14 @@
                 return;
             }
             
-            // Форматируем deadline если указан (интерпретируем как МСК)
+            // Форматируем deadline если указан
+            // datetime-local всегда возвращает локальное время (МСК)
+            // Конвертируем МСК в UTC для отправки на сервер
             let deadlineValue = document.getElementById('deadline').value;
             if (deadlineValue) {
-                // Парсим введенное время как МСК и конвертируем в UTC для отправки на сервер
-                const moscowDate = parseMoscowDateTime(deadlineValue);
-                deadlineValue = moscowDate.toISOString().slice(0, 19).replace('T', ' ');
+                // Парсим введенное время как локальное (МСК) и конвертируем в UTC
+                const utcDate = parseLocalDateTimeToUTC(deadlineValue);
+                deadlineValue = utcDate.toISOString().slice(0, 19).replace('T', ' ');
             }
             
             // Объединяем описание с оригинальным сообщением
