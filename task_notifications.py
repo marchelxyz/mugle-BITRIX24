@@ -637,11 +637,18 @@ class TaskNotificationService:
                             changes['changes'].append('дедлайн просрочен')
                         else:
                             # Дедлайн изменен, но не просрочен
-                            changes['changes'].append('изменен срок сдачи')
+                            # Проверяем статус: если статус "В работе" (2), то это "начал выполнять задачу"
+                            if status_after is not None and str(status_after) == '2':
+                                changes['changes'].append('начал выполнять задачу')
+                            else:
+                                changes['changes'].append('изменен срок сдачи')
                     except Exception as e:
                         logger.debug(f"Ошибка при парсинге дедлайна {deadline_after}: {e}")
-                        # Если не удалось распарсить, считаем что срок изменен
-                        changes['changes'].append('изменен срок сдачи')
+                        # Если не удалось распарсить, проверяем статус
+                        if status_after is not None and str(status_after) == '2':
+                            changes['changes'].append('начал выполнять задачу')
+                        else:
+                            changes['changes'].append('изменен срок сдачи')
                 elif deadline_before:
                     # Дедлайн был удален
                     changes['changes'].append('удален срок сдачи')
@@ -655,11 +662,26 @@ class TaskNotificationService:
                 changes['status_before'] = status_before
                 changes['status_after'] = status_after
                 
-                status_name_after = self._get_status_name(status_after) if status_after else None
-                if status_name_after:
-                    changes['changes'].append(f'статус изменен на "{status_name_after}"')
+                # Если статус меняется на "В работе" и дедлайн был изменен, заменяем "изменен срок сдачи" на "начал выполнять задачу"
+                if str(status_after) == '2' and changes.get('deadline_changed'):
+                    # Ищем и заменяем "изменен срок сдачи" на "начал выполнять задачу"
+                    if 'изменен срок сдачи' in changes['changes']:
+                        changes['changes'] = [ch for ch in changes['changes'] if ch != 'изменен срок сдачи']
+                        if 'начал выполнять задачу' not in changes['changes']:
+                            changes['changes'].append('начал выполнять задачу')
+                    # Если статус меняется на "В работе", но дедлайн не был изменен, добавляем сообщение о статусе
+                    if 'начал выполнять задачу' not in changes['changes']:
+                        status_name_after = self._get_status_name(status_after) if status_after else None
+                        if status_name_after:
+                            changes['changes'].append(f'статус изменен на "{status_name_after}"')
+                        else:
+                            changes['changes'].append('статус изменен')
                 else:
-                    changes['changes'].append('статус изменен')
+                    status_name_after = self._get_status_name(status_after) if status_after else None
+                    if status_name_after:
+                        changes['changes'].append(f'статус изменен на "{status_name_after}"')
+                    else:
+                        changes['changes'].append('статус изменен')
                 logger.debug(f"✅ Обнаружено изменение статуса: {status_before} -> {status_after}")
             elif status_before is None or status_after is None:
                 logger.debug(f"⏭️ Пропуск проверки статуса: одно из значений None (before={status_before}, after={status_after})")
