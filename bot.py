@@ -9,6 +9,7 @@ import threading
 import asyncio
 import secrets
 from datetime import datetime, timedelta, timezone
+import time
 
 # Московское время (UTC+3)
 MSK_TIMEZONE = timezone(timedelta(hours=3))
@@ -2306,6 +2307,15 @@ def main():
                 # API: Получение списка пользователей
                 async def miniapp_users_handler(request):
                     try:
+                        # Проверяем кэш (кэш на 5 минут)
+                        cache_key = 'miniapp_users_cache'
+                        cache_data = application.bot_data.get(cache_key)
+                        if cache_data and cache_data.get('timestamp'):
+                            cache_age = time.time() - cache_data['timestamp']
+                            if cache_age < 300:  # 5 минут
+                                logger.debug(f"Используем кэшированный список пользователей (возраст: {cache_age:.1f}с)")
+                                return web.json_response(cache_data['data'])
+                        
                         # Получаем всех активных пользователей из Bitrix24
                         users = bitrix_client.get_all_users(active_only=True)
                         
@@ -2358,6 +2368,12 @@ def main():
                         # Сортируем по имени для удобства
                         users_list.sort(key=lambda x: x['name'].lower())
                         
+                        # Сохраняем в кэш
+                        application.bot_data[cache_key] = {
+                            'data': users_list,
+                            'timestamp': time.time()
+                        }
+                        
                         logger.info(f"✅ Загружено {len(users_list)} пользователей для мини-приложения")
                         return web.json_response(users_list)
                     except Exception as e:
@@ -2367,6 +2383,15 @@ def main():
                 # API: Получение списка подразделений
                 async def miniapp_departments_handler(request):
                     try:
+                        # Проверяем кэш (кэш на 5 минут)
+                        cache_key = 'miniapp_departments_cache'
+                        cache_data = application.bot_data.get(cache_key)
+                        if cache_data and cache_data.get('timestamp'):
+                            cache_age = time.time() - cache_data['timestamp']
+                            if cache_age < 300:  # 5 минут
+                                logger.debug(f"Используем кэшированный список подразделений (возраст: {cache_age:.1f}с)")
+                                return web.json_response(cache_data['data'])
+                        
                         # Получаем все подразделения из Bitrix24
                         departments = bitrix_client.get_all_departments()
                         
@@ -2383,6 +2408,12 @@ def main():
                         
                         # Сортируем по имени для удобства
                         departments_list.sort(key=lambda x: x['name'])
+                        
+                        # Сохраняем в кэш
+                        application.bot_data[cache_key] = {
+                            'data': departments_list,
+                            'timestamp': time.time()
+                        }
                         
                         return web.json_response(departments_list)
                     except Exception as e:

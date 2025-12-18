@@ -448,51 +448,6 @@
             cursor: not-allowed;
         }
         
-        .file-list {
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-        }
-        
-        .file-item {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 8px 12px;
-            background: var(--tg-theme-secondary-bg-color, #f0f0f0);
-            border-radius: 6px;
-            font-size: 14px;
-        }
-        
-        .file-item-name {
-            flex: 1;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-            color: var(--tg-theme-text-color, #000000);
-        }
-        
-        .file-item-size {
-            margin-left: 8px;
-            color: var(--tg-theme-hint-color, #999999);
-            font-size: 12px;
-        }
-        
-        .file-item-remove {
-            margin-left: 8px;
-            padding: 4px 8px;
-            background: #ff4444;
-            color: white;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 12px;
-        }
-        
-        .file-item-remove:active {
-            opacity: 0.8;
-        }
-        
         .deadline-shortcuts {
             margin-top: 8px;
         }
@@ -567,7 +522,7 @@
             </div>
             
             <div class="form-group">
-                <label>Срок выполнения</label>
+                <label>Срок выполнения (время указывается в МСК)</label>
                 <input type="datetime-local" id="deadline">
                 <div class="deadline-shortcuts" style="margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px;">
                     <button type="button" class="deadline-btn" onclick="setDeadlineShortcut(1)">Через 1 день</button>
@@ -581,13 +536,6 @@
             <div class="form-group">
                 <label>Описание</label>
                 <textarea id="description" placeholder="Дополнительное описание задачи"></textarea>
-            </div>
-            
-            <div class="form-group">
-                <label>Файлы (опционально)</label>
-                <input type="file" id="fileInput" multiple style="display: none;" accept="*/*">
-                <button type="button" class="btn-change" onclick="document.getElementById('fileInput').click()">Выбрать файлы</button>
-                <div id="fileList" class="file-list" style="margin-top: 8px;"></div>
             </div>
             
             <div class="form-group">
@@ -682,7 +630,6 @@
         let departmentsList = [];
         let selectedResponsibles = [];
         let selectedUsersInModal = new Set();
-        let selectedFiles = [];
         
         // Получаем базовый URL для API запросов
         function getApiUrl(path) {
@@ -753,27 +700,29 @@
                 }
                 
                 // Устанавливаем отдел, если он был автоматически определен
+                // Не загружаем подразделения здесь - они загрузятся параллельно ниже
                 if (data.department_id) {
                     document.getElementById('departmentId').value = data.department_id;
-                    // Загружаем список подразделений для отображения названия
-                    await loadDepartments();
-                    // Устанавливаем выбранное значение в select
-                    const departmentSelect = document.getElementById('departmentSelect');
-                    departmentSelect.value = data.department_id;
+                    // Значение в select установится после загрузки списка подразделений
                 }
                 
                 document.getElementById('originalMessage').textContent = data.original_message_text || '(нет текста)';
                 
-                // Загружаем список пользователей для выбора
-                await loadUsers();
-                
-                // Загружаем список подразделений
-                await loadDepartments();
-                
-                // Скрываем индикатор загрузки и показываем форму
+                // Скрываем индикатор загрузки и показываем форму СРАЗУ после загрузки сессии
+                // Списки пользователей и подразделений загрузим параллельно в фоне
                 document.getElementById('loading').classList.remove('show');
                 document.getElementById('taskForm').style.display = 'block';
                 console.log('Форма отображена');
+                
+                // Загружаем списки параллельно в фоне (не блокируем отображение формы)
+                Promise.all([
+                    loadUsers(),
+                    loadDepartments()
+                ]).then(() => {
+                    console.log('Списки пользователей и подразделений загружены');
+                }).catch(error => {
+                    console.error('Ошибка загрузки списков:', error);
+                });
             } catch (error) {
                 console.error('Ошибка загрузки сессии:', error);
                 document.getElementById('loading').classList.remove('show');
@@ -801,8 +750,8 @@
                     departmentsList = await response.json();
                     const departmentSelect = document.getElementById('departmentSelect');
                     
-                    // Сохраняем текущее выбранное значение
-                    const currentValue = departmentSelect.value;
+                    // Сохраняем текущее выбранное значение (из сессии или уже выбранное)
+                    const currentValue = document.getElementById('departmentId').value || departmentSelect.value;
                     
                     // Очищаем список (кроме первого элемента "Не выбрано")
                     departmentSelect.innerHTML = '<option value="">Не выбрано</option>';
@@ -815,20 +764,27 @@
                         departmentSelect.appendChild(option);
                     });
                     
-                    // Восстанавливаем выбранное значение, если оно было
+                    // Восстанавливаем выбранное значение из сессии или уже выбранное
                     if (currentValue) {
                         departmentSelect.value = currentValue;
+                        document.getElementById('departmentId').value = currentValue;
                     }
-                    
-                    // Обновляем скрытое поле при изменении select
-                    departmentSelect.addEventListener('change', function() {
-                        document.getElementById('departmentId').value = this.value || '';
-                    });
                 }
             } catch (error) {
                 console.error('Ошибка загрузки подразделений:', error);
             }
         }
+        
+        // Инициализация обработчика для select подразделений (один раз при загрузке страницы)
+        // Так как скрипт находится в конце body, DOM уже загружен, можно добавить обработчик сразу
+        (function initDepartmentSelectHandler() {
+            const departmentSelect = document.getElementById('departmentSelect');
+            if (departmentSelect) {
+                departmentSelect.addEventListener('change', function() {
+                    document.getElementById('departmentId').value = this.value || '';
+                });
+            }
+        })();
         
         // Изменение постановщика
         function changeCreator() {
@@ -1073,75 +1029,69 @@
             }
         });
         
-        // Обработка выбора файлов
-        document.getElementById('fileInput').addEventListener('change', (e) => {
-            const files = Array.from(e.target.files);
-            files.forEach(file => {
-                // Проверяем, не добавлен ли уже этот файл
-                if (!selectedFiles.find(f => f.name === file.name && f.size === file.size)) {
-                    selectedFiles.push(file);
-                }
-            });
-            renderFileList();
-            // Очищаем input для возможности повторного выбора того же файла
-            e.target.value = '';
-        });
+        // Функция для получения текущего времени в МСК
+        // Возвращает объект Date, который представляет МСК время
+        function getMoscowTime() {
+            const now = new Date();
+            // Получаем UTC время в миллисекундах
+            const utcTime = now.getTime();
+            // Получаем текущее МСК время (UTC+3)
+            // Создаем дату, которая будет показывать МСК время при форматировании
+            const moscowOffset = 3 * 60 * 60 * 1000; // 3 часа в миллисекундах
+            const moscowTime = new Date(utcTime + moscowOffset);
+            return moscowTime;
+        }
         
-        // Отображение списка файлов
-        function renderFileList() {
-            const fileListEl = document.getElementById('fileList');
-            fileListEl.innerHTML = '';
+        // Функция для получения МСК времени из UTC даты
+        function getMoscowTimeFromUTC(utcDate) {
+            const moscowOffset = 3 * 60 * 60 * 1000; // 3 часа в миллисекундах
+            return new Date(utcDate.getTime() + moscowOffset);
+        }
+        
+        // Функция для форматирования даты в МСК для input[type="datetime-local"]
+        // date должен быть объектом Date, представляющим МСК время
+        function formatMoscowDateTime(date) {
+            // date уже представляет МСК время, форматируем его
+            const year = date.getUTCFullYear();
+            const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+            const day = String(date.getUTCDate()).padStart(2, '0');
+            const hours = String(date.getUTCHours()).padStart(2, '0');
+            const minutes = String(date.getUTCMinutes()).padStart(2, '0');
+            return `${year}-${month}-${day}T${hours}:${minutes}`;
+        }
+        
+        // Функция для парсинга datetime-local значения как МСК времени
+        // Входная строка интерпретируется как МСК, возвращается UTC Date
+        function parseMoscowDateTime(dateTimeString) {
+            // Парсим строку формата YYYY-MM-DDTHH:mm
+            const [datePart, timePart] = dateTimeString.split('T');
+            const [year, month, day] = datePart.split('-').map(Number);
+            const [hours, minutes] = timePart.split(':').map(Number);
             
-            selectedFiles.forEach((file, index) => {
-                const fileItem = document.createElement('div');
-                fileItem.className = 'file-item';
-                
-                const fileSize = formatFileSize(file.size);
-                
-                fileItem.innerHTML = `
-                    <span class="file-item-name">${file.name}</span>
-                    <span class="file-item-size">${fileSize}</span>
-                    <button type="button" class="file-item-remove" onclick="removeFile(${index})">✕</button>
-                `;
-                
-                fileListEl.appendChild(fileItem);
-            });
-        }
-        
-        // Удаление файла из списка
-        function removeFile(index) {
-            selectedFiles.splice(index, 1);
-            renderFileList();
-        }
-        
-        // Форматирование размера файла
-        function formatFileSize(bytes) {
-            if (bytes === 0) return '0 Bytes';
-            const k = 1024;
-            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-            const i = Math.floor(Math.log(bytes) / Math.log(k));
-            return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+            // Интерпретируем введенные значения как МСК время
+            // МСК = UTC+3, поэтому создаем UTC дату, вычитая 3 часа
+            const moscowDate = new Date(Date.UTC(year, month - 1, day, hours, minutes));
+            // Вычитаем 3 часа для получения UTC
+            const utcDate = new Date(moscowDate.getTime() - (3 * 60 * 60 * 1000));
+            
+            return utcDate;
         }
         
         // Установка дедлайна через заготовку (количество дней)
         function setDeadlineShortcut(days) {
-            const now = new Date();
-            // Добавляем дни
-            const deadlineDate = new Date(now);
-            deadlineDate.setDate(now.getDate() + days);
+            // Получаем текущее время в МСК
+            const nowMoscow = getMoscowTime();
             
-            // Устанавливаем время на 18:00 (конец рабочего дня)
-            deadlineDate.setHours(18, 0, 0, 0);
+            // Добавляем дни (работаем с МСК временем)
+            const deadlineMoscow = new Date(nowMoscow);
+            deadlineMoscow.setUTCDate(nowMoscow.getUTCDate() + days);
+            
+            // Устанавливаем время на 18:00 МСК (конец рабочего дня)
+            deadlineMoscow.setUTCHours(18, 0, 0, 0);
             
             // Форматируем для input[type="datetime-local"]
-            // Формат: YYYY-MM-DDTHH:mm
-            const year = deadlineDate.getFullYear();
-            const month = String(deadlineDate.getMonth() + 1).padStart(2, '0');
-            const day = String(deadlineDate.getDate()).padStart(2, '0');
-            const hours = String(deadlineDate.getHours()).padStart(2, '0');
-            const minutes = String(deadlineDate.getMinutes()).padStart(2, '0');
-            
-            const formattedDate = `${year}-${month}-${day}T${hours}:${minutes}`;
+            // deadlineMoscow уже представляет МСК время
+            const formattedDate = formatMoscowDateTime(deadlineMoscow);
             
             // Устанавливаем значение в поле
             document.getElementById('deadline').value = formattedDate;
@@ -1154,7 +1104,12 @@
                 15: '15 дней',
                 30: 'месяц'
             };
-            tg.showAlert(`✅ Срок установлен: через ${dayLabels[days] || days + ' дней'} (${day}.${month}.${year} в ${hours}:${minutes})`);
+            const day = String(deadlineMoscow.getUTCDate()).padStart(2, '0');
+            const month = String(deadlineMoscow.getUTCMonth() + 1).padStart(2, '0');
+            const year = deadlineMoscow.getUTCFullYear();
+            const hours = String(deadlineMoscow.getUTCHours()).padStart(2, '0');
+            const minutes = String(deadlineMoscow.getUTCMinutes()).padStart(2, '0');
+            tg.showAlert(`✅ Срок установлен: через ${dayLabels[days] || days + ' дней'} (${day}.${month}.${year} в ${hours}:${minutes} МСК)`);
         }
         
         // Обработка отправки формы
@@ -1185,11 +1140,12 @@
                 return;
             }
             
-            // Форматируем deadline если указан
+            // Форматируем deadline если указан (интерпретируем как МСК)
             let deadlineValue = document.getElementById('deadline').value;
             if (deadlineValue) {
-                const date = new Date(deadlineValue);
-                deadlineValue = date.toISOString().slice(0, 19).replace('T', ' ');
+                // Парсим введенное время как МСК и конвертируем в UTC для отправки на сервер
+                const moscowDate = parseMoscowDateTime(deadlineValue);
+                deadlineValue = moscowDate.toISOString().slice(0, 19).replace('T', ' ');
             }
             
             // Объединяем описание с оригинальным сообщением
@@ -1203,50 +1159,21 @@
             }
             
             try {
-                // Если есть файлы, используем FormData, иначе JSON
-                let requestBody;
-                let headers = {};
+                // Используем JSON для отправки данных
+                const formData = {
+                    token: token,
+                    title: document.getElementById('taskTitle').value,
+                    creator_id: parseInt(document.getElementById('creatorId').value),
+                    responsible_ids: responsibleIdsArray,
+                    deadline: deadlineValue || null,
+                    description: descriptionValue || '',
+                    department_id: departmentId ? parseInt(departmentId) : null
+                };
                 
-                if (selectedFiles.length > 0) {
-                    // Используем FormData для отправки файлов
-                    const formData = new FormData();
-                    formData.append('token', token);
-                    formData.append('title', document.getElementById('taskTitle').value);
-                    formData.append('creator_id', document.getElementById('creatorId').value);
-                    formData.append('responsible_ids', JSON.stringify(responsibleIdsArray));
-                    if (deadlineValue) {
-                        formData.append('deadline', deadlineValue);
-                    }
-                    if (descriptionValue) {
-                        formData.append('description', descriptionValue);
-                    }
-                    if (departmentId) {
-                        formData.append('department_id', departmentId);
-                    }
-                    
-                    // Добавляем файлы
-                    selectedFiles.forEach((file, index) => {
-                        formData.append(`file_${index}`, file);
-                    });
-                    formData.append('files_count', selectedFiles.length.toString());
-                    
-                    requestBody = formData;
-                    // Не устанавливаем Content-Type - браузер установит его автоматически с boundary
-                } else {
-                    // Используем JSON если файлов нет
-                    const formData = {
-                        token: token,
-                        title: document.getElementById('taskTitle').value,
-                        creator_id: parseInt(document.getElementById('creatorId').value),
-                        responsible_ids: responsibleIdsArray,
-                        deadline: deadlineValue || null,
-                        description: descriptionValue || '',
-                        department_id: departmentId ? parseInt(departmentId) : null
-                    };
-                    
-                    requestBody = JSON.stringify(formData);
-                    headers['Content-Type'] = 'application/json';
-                }
+                const requestBody = JSON.stringify(formData);
+                const headers = {
+                    'Content-Type': 'application/json'
+                };
                 
                 const response = await fetch(getApiUrl('/api/miniapp/create-task'), {
                     method: 'POST',
