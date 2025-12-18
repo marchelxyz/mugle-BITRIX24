@@ -399,7 +399,11 @@ class TaskNotificationService:
                         # Простой формат YYYY-MM-DD HH:MI:SS (считаем что это уже в МСК)
                         deadline_dt = datetime.strptime(deadline_str, '%Y-%m-%d %H:%M:%S')
                     
+                    # ВАЖНО: Приводим now к naive datetime в московском времени для корректного сравнения
                     now = datetime.now(MSK_TIMEZONE)
+                    if now.tzinfo:
+                        now = now.astimezone(MSK_TIMEZONE).replace(tzinfo=None)
+                    
                     hours_left = int((deadline_dt - now).total_seconds() / 3600)
                     if hours_left < 0:
                         hours_left = 0
@@ -610,7 +614,10 @@ class TaskNotificationService:
                             deadline_dt = deadline_after
                         
                         # Если дедлайн просрочен, показываем это, иначе показываем изменение срока
+                        # ВАЖНО: Приводим now к naive datetime в московском времени для корректного сравнения
                         now = datetime.now(MSK_TIMEZONE)
+                        if now.tzinfo:
+                            now = now.astimezone(MSK_TIMEZONE).replace(tzinfo=None)
                         is_overdue = deadline_dt < now
                         logger.debug(f"🔍 Проверка просроченности дедлайна: deadline={deadline_dt}, current={now}, overdue={is_overdue}")
                         if is_overdue:
@@ -669,7 +676,10 @@ class TaskNotificationService:
                     else:
                         deadline_dt = deadline_after
                     
+                    # ВАЖНО: Приводим now к naive datetime в московском времени для корректного сравнения
                     now = datetime.now(MSK_TIMEZONE)
+                    if now.tzinfo:
+                        now = now.astimezone(MSK_TIMEZONE).replace(tzinfo=None)
                     is_overdue = deadline_dt < now
                     logger.debug(f"🔍 Проверка просроченности дедлайна (без предыдущего состояния): deadline={deadline_dt}, current={now}, overdue={is_overdue}")
                     if is_overdue:

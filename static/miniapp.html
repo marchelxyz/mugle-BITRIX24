@@ -1071,44 +1071,51 @@
         }
         
         // Функция для парсинга datetime-local значения
-        // datetime-local всегда возвращает локальное время браузера (МСК)
-        // Конвертируем МСК в UTC для отправки на сервер (добавляем 3 часа к UTC)
+        // datetime-local всегда возвращает локальное время браузера
+        // Но мы интерпретируем его как МСК время и конвертируем в UTC
         function parseLocalDateTimeToUTC(dateTimeString) {
-            // Парсим строку формата YYYY-MM-DDTHH:mm как локальное время
+            // Парсим строку формата YYYY-MM-DDTHH:mm
             const [datePart, timePart] = dateTimeString.split('T');
             const [year, month, day] = datePart.split('-').map(Number);
             const [hours, minutes] = timePart.split(':').map(Number);
             
-            // Создаем дату в локальном времени (МСК)
-            const localDate = new Date(year, month - 1, day, hours, minutes);
-            
-            // Конвертируем МСК в UTC: вычитаем 3 часа
+            // Создаем дату, интерпретируя введенное время как МСК время
+            // Для этого создаем UTC дату, которая при отображении в МСК будет показывать нужное время
             // МСК = UTC+3, поэтому UTC = МСК - 3 часа
-            const utcDate = new Date(localDate.getTime() - (3 * 60 * 60 * 1000));
+            // Создаем дату в UTC, которая при добавлении 3 часов даст нужное МСК время
+            const mskDate = new Date(Date.UTC(year, month - 1, day, hours, minutes));
+            // Вычитаем 3 часа, чтобы получить правильное UTC время
+            const utcDate = new Date(mskDate.getTime() - (3 * 60 * 60 * 1000));
             
             return utcDate;
         }
         
         // Установка дедлайна через заготовку (количество дней)
         function setDeadlineShortcut(days) {
-            // Получаем текущее локальное время (МСК)
-            const now = new Date();
+            // Получаем текущее МСК время
+            const nowMsk = getMoscowTime();
             
-            // Добавляем дни
-            const deadlineLocal = new Date(now);
-            deadlineLocal.setDate(now.getDate() + days);
+            // Добавляем дни к МСК времени
+            const deadlineMsk = new Date(nowMsk);
+            deadlineMsk.setDate(nowMsk.getDate() + days);
             
             // Устанавливаем время на 18:00 МСК (конец рабочего дня)
-            deadlineLocal.setHours(18, 0, 0, 0);
+            deadlineMsk.setHours(18, 0, 0, 0);
+            
+            // Для datetime-local нужно преобразовать МСК время в локальное время браузера
+            // datetime-local работает с локальным временем браузера
+            // Получаем UTC время из МСК времени
+            const mskOffset = 3 * 60 * 60 * 1000; // 3 часа в миллисекундах
+            const utcTime = deadlineMsk.getTime() - mskOffset;
+            const localDate = new Date(utcTime);
             
             // Форматируем для input[type="datetime-local"]
-            // datetime-local работает с локальным временем, поэтому просто форматируем локальное время
-            const formattedDate = formatLocalDateTime(deadlineLocal);
+            const formattedDate = formatLocalDateTime(localDate);
             
             // Устанавливаем значение в поле
             document.getElementById('deadline').value = formattedDate;
             
-            // Показываем уведомление
+            // Показываем уведомление с МСК временем
             const dayLabels = {
                 1: '1 день',
                 3: '3 дня',
@@ -1116,11 +1123,11 @@
                 15: '15 дней',
                 30: 'месяц'
             };
-            const day = String(deadlineLocal.getDate()).padStart(2, '0');
-            const month = String(deadlineLocal.getMonth() + 1).padStart(2, '0');
-            const year = deadlineLocal.getFullYear();
-            const hours = String(deadlineLocal.getHours()).padStart(2, '0');
-            const minutes = String(deadlineLocal.getMinutes()).padStart(2, '0');
+            const day = String(deadlineMsk.getDate()).padStart(2, '0');
+            const month = String(deadlineMsk.getMonth() + 1).padStart(2, '0');
+            const year = deadlineMsk.getFullYear();
+            const hours = String(deadlineMsk.getHours()).padStart(2, '0');
+            const minutes = String(deadlineMsk.getMinutes()).padStart(2, '0');
             tg.showAlert(`✅ Срок установлен: через ${dayLabels[days] || days + ' дней'} (${day}.${month}.${year} в ${hours}:${minutes} МСК)`);
         }
         

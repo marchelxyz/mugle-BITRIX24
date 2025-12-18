@@ -1882,6 +1882,11 @@ class Bitrix24Client:
         if current_time is None:
             current_time = datetime.now(MSK_TIMEZONE)
         
+        # ВАЖНО: Приводим current_time к naive datetime в московском времени для корректного сравнения
+        # Все дедлайны также приводятся к naive datetime в московском времени
+        if current_time.tzinfo:
+            current_time = current_time.astimezone(MSK_TIMEZONE).replace(tzinfo=None)
+        
         deadline_str = self._get_task_field(task, ['deadline', 'DEADLINE', 'Deadline'])
         
         if not deadline_str:
@@ -1902,15 +1907,19 @@ class Bitrix24Client:
                     # Если нет временной зоны, считаем что это UTC и конвертируем в МСК
                     deadline_dt = deadline_dt.replace(tzinfo=timezone.utc).astimezone(MSK_TIMEZONE).replace(tzinfo=None)
             # Формат YYYY-MM-DD HH:MI:SS
+            # ВАЖНО: Bitrix24 возвращает дедлайны в московском времени, поэтому парсим как есть
             elif ' ' in deadline_str:
                 deadline_dt = datetime.strptime(deadline_str, '%Y-%m-%d %H:%M:%S')
+                # deadline_dt уже в московском времени (naive datetime)
             # Формат YYYY-MM-DD
             elif len(deadline_str) == 10:
                 deadline_dt = datetime.strptime(deadline_str, '%Y-%m-%d')
                 # Если указана только дата, считаем дедлайн на конец дня
                 deadline_dt = deadline_dt.replace(hour=23, minute=59, second=59)
+                # deadline_dt уже в московском времени (naive datetime)
             
             if deadline_dt:
+                # Теперь оба datetime - naive в московском времени, сравнение корректно
                 is_overdue = deadline_dt < current_time
                 logger.debug(f"🔍 Проверка просроченности задачи {task.get('id')}: deadline={deadline_dt}, current={current_time}, overdue={is_overdue}")
                 return is_overdue
