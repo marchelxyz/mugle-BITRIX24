@@ -364,18 +364,16 @@ def format_deadline_for_display(deadline: str) -> str:
     Форматирует deadline для отображения в московском времени.
     
     Args:
-        deadline: Дедлайн в формате YYYY-MM-DD HH:MM:SS (UTC время, которое приходит с клиента)
+        deadline: Дедлайн в формате YYYY-MM-DD HH:MM:SS (МСК время, которое передается как есть)
         
     Returns:
         Отформатированная строка с датой и временем в московском формате
     """
     try:
         # Парсим deadline как naive datetime (без временной зоны)
-        # Это UTC время, которое приходит с клиента (например, 15:00 UTC для 18:00 МСК)
+        # Время уже в МСК формате, передаем как есть
         deadline_dt = datetime.strptime(deadline, "%Y-%m-%d %H:%M:%S")
-        # Добавляем 3 часа, чтобы показать МСК время
-        deadline_dt = deadline_dt + timedelta(hours=3)
-        # Возвращаем в том же формате для отображения
+        # Возвращаем в том же формате для отображения (уже в МСК)
         return deadline_dt.strftime("%Y-%m-%d %H:%M:%S")
     except Exception as e:
         logger.error(f"Ошибка форматирования deadline '{deadline}': {e}")
@@ -469,14 +467,12 @@ def parse_deadline(deadline_text: str) -> Optional[str]:
                 deadline_date = now + timedelta(days=days)
                 # Устанавливаем время на 18:00 МСК (конец рабочего дня)
                 deadline_date = deadline_date.replace(hour=18, minute=0, second=0, microsecond=0)
-                # Конвертируем МСК в UTC (вычитаем 3 часа) для отправки в Bitrix
-                # _adjust_deadline_time добавит 3 часа обратно
-                deadline_date_utc = deadline_date - timedelta(hours=3)
                 # Убираем временную зону для формата, который ожидает Bitrix24
-                if deadline_date_utc.tzinfo:
-                    deadline_date_utc = deadline_date_utc.replace(tzinfo=None)
-                # Форматируем дату (в UTC формате)
-                date_str = deadline_date_utc.strftime("%Y-%m-%d %H:%M:%S")
+                # Передаем время как есть, без конвертаций - Bitrix интерпретирует его как МСК
+                if deadline_date.tzinfo:
+                    deadline_date = deadline_date.replace(tzinfo=None)
+                # Форматируем дату (в формате МСК, который Bitrix интерпретирует как МСК)
+                date_str = deadline_date.strftime("%Y-%m-%d %H:%M:%S")
                 return date_str
         
         # Паттерн 2: дд.мм.гг чч:мм (старый формат)
@@ -492,16 +488,12 @@ def parse_deadline(deadline_text: str) -> Optional[str]:
             
             # Создаем дату в МСК времени
             deadline_date = datetime(int(year), int(month), int(day), int(hour), int(minute))
-            # Добавляем временную зону МСК
-            deadline_date = deadline_date.replace(tzinfo=MSK_TIMEZONE)
-            # Конвертируем МСК в UTC (вычитаем 3 часа) для отправки в Bitrix
-            # _adjust_deadline_time добавит 3 часа обратно
-            deadline_date_utc = deadline_date - timedelta(hours=3)
             # Убираем временную зону для формата, который ожидает Bitrix24
-            if deadline_date_utc.tzinfo:
-                deadline_date_utc = deadline_date_utc.replace(tzinfo=None)
-            # Форматируем дату (в UTC формате)
-            date_str = deadline_date_utc.strftime("%Y-%m-%d %H:%M:%S")
+            # Передаем время как есть, без конвертаций - Bitrix интерпретирует его как МСК
+            if deadline_date.tzinfo:
+                deadline_date = deadline_date.replace(tzinfo=None)
+            # Форматируем дату (в формате МСК, который Bitrix интерпретирует как МСК)
+            date_str = deadline_date.strftime("%Y-%m-%d %H:%M:%S")
             
             # Проверяем валидность даты
             datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S")

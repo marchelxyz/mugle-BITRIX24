@@ -161,10 +161,9 @@ class Bitrix24Client:
             }
         
         if deadline:
-            # Добавляем 3 часа к UTC времени для компенсации разницы в Bitrix24
-            # Bitrix24 интерпретирует UTC время как МСК, поэтому нужно скрыто добавить 3 часа
-            adjusted_deadline = self._adjust_deadline_time(deadline)
-            task_data["fields"]["DEADLINE"] = adjusted_deadline
+            # Передаем время как есть - Bitrix интерпретирует его как МСК
+            # Не нужно добавлять 3 часа, так как время уже в правильном формате
+            task_data["fields"]["DEADLINE"] = deadline
         
         # Добавляем подразделение, если указано
         # Примечание: В Bitrix24 для задач может использоваться поле GROUP_ID (для группы) 
