@@ -126,6 +126,18 @@
             font-size: 14px;
             color: var(--tg-theme-text-color, #000000);
             border-left: 3px solid var(--tg-theme-button-color, #3390ec);
+            word-wrap: break-word;
+            word-break: break-word;
+            overflow-wrap: break-word;
+            hyphens: auto;
+        }
+        
+        #originalMessage {
+            word-wrap: break-word;
+            word-break: break-word;
+            overflow-wrap: break-word;
+            hyphens: auto;
+            max-width: 100%;
         }
         
         .original-message-label {
@@ -181,14 +193,14 @@
         }
         
         .loading {
-            display: none;
+            display: none !important;
             text-align: center;
             padding: 20px;
             color: var(--tg-theme-hint-color, #999999);
         }
         
         .loading.show {
-            display: block;
+            display: flex !important;
         }
         
         .success {
@@ -480,7 +492,7 @@
     <div class="container">
         <h1>📋 Создание задачи</h1>
         
-        <div id="loading" class="loading show">
+        <div id="loading" class="loading">
             <span>Загрузка...</span>
         </div>
         <div id="error" class="error"></div>
@@ -641,8 +653,10 @@
         
         // Загружаем данные сессии
         async function loadSession() {
-            // Показываем индикатор загрузки
-            document.getElementById('loading').classList.add('show');
+            // Показываем индикатор загрузки только если форма еще не загружена
+            if (document.getElementById('taskForm').style.display === 'none') {
+                document.getElementById('loading').classList.add('show');
+            }
             try {
                 let response;
                 
@@ -675,7 +689,11 @@
                     // Если пользователь не найден в Bitrix24, показываем понятное сообщение
                     if (errorData.error_code === 'USER_NOT_LINKED') {
                         showError('Ваш Telegram аккаунт не связан с Битрикс24.\n\nИспользуйте команду:\n/link bitrix_user_id\n\nЧтобы узнать свой ID в Битрикс24, зайдите в профиль и посмотрите в URL.');
-                        document.getElementById('loading').classList.remove('show');
+                        const loadingEl = document.getElementById('loading');
+                        if (loadingEl) {
+                            loadingEl.classList.remove('show');
+                            loadingEl.style.display = 'none';
+                        }
                         return;
                     }
                     
@@ -710,7 +728,11 @@
                 
                 // Скрываем индикатор загрузки и показываем форму СРАЗУ после загрузки сессии
                 // Списки пользователей и подразделений загрузим параллельно в фоне
-                document.getElementById('loading').classList.remove('show');
+                const loadingEl = document.getElementById('loading');
+                if (loadingEl) {
+                    loadingEl.classList.remove('show');
+                    loadingEl.style.display = 'none';
+                }
                 document.getElementById('taskForm').style.display = 'block';
                 console.log('Форма отображена');
                 
@@ -725,7 +747,11 @@
                 });
             } catch (error) {
                 console.error('Ошибка загрузки сессии:', error);
-                document.getElementById('loading').classList.remove('show');
+                const loadingEl = document.getElementById('loading');
+                if (loadingEl) {
+                    loadingEl.classList.remove('show');
+                    loadingEl.style.display = 'none';
+                }
                 showError('Ошибка загрузки данных: ' + (error.message || 'Неизвестная ошибка'));
             }
         }
@@ -1061,7 +1087,10 @@
         }
         
         // Функция для парсинга datetime-local значения как МСК времени
-        // Входная строка интерпретируется как МСК, возвращается UTC Date
+        // Входная строка интерпретируется как МСК, возвращается строка для отправки в битрикс
+        // Битрикс интерпретирует UTC время как МСК, поэтому добавляем 3 часа к МСК времени
+        // чтобы компенсировать разницу: если хотим 18:00 МСК, отправляем 21:00 МСК (18:00 + 3 часа)
+        // Битрикс интерпретирует это как 18:00 МСК
         function parseMoscowDateTime(dateTimeString) {
             // Парсим строку формата YYYY-MM-DDTHH:mm
             const [datePart, timePart] = dateTimeString.split('T');
@@ -1069,12 +1098,20 @@
             const [hours, minutes] = timePart.split(':').map(Number);
             
             // Интерпретируем введенные значения как МСК время
-            // МСК = UTC+3, поэтому создаем UTC дату, вычитая 3 часа
+            // Битрикс интерпретирует UTC как МСК, поэтому добавляем 3 часа к МСК времени
+            // Создаем дату в UTC с МСК временем
             const moscowDate = new Date(Date.UTC(year, month - 1, day, hours, minutes));
-            // Вычитаем 3 часа для получения UTC
-            const utcDate = new Date(moscowDate.getTime() - (3 * 60 * 60 * 1000));
+            // Добавляем 3 часа к МСК времени для отправки в битрикс
+            const adjustedDate = new Date(moscowDate.getTime() + (3 * 60 * 60 * 1000));
             
-            return utcDate;
+            // Форматируем в формат YYYY-MM-DD HH:MI:SS для битрикс
+            const adjustedYear = adjustedDate.getUTCFullYear();
+            const adjustedMonth = String(adjustedDate.getUTCMonth() + 1).padStart(2, '0');
+            const adjustedDay = String(adjustedDate.getUTCDate()).padStart(2, '0');
+            const adjustedHours = String(adjustedDate.getUTCHours()).padStart(2, '0');
+            const adjustedMinutes = String(adjustedDate.getUTCMinutes()).padStart(2, '0');
+            
+            return `${adjustedYear}-${adjustedMonth}-${adjustedDay} ${adjustedHours}:${adjustedMinutes}:00`;
         }
         
         // Установка дедлайна через заготовку (количество дней)
@@ -1087,13 +1124,15 @@
             deadlineMoscow.setUTCDate(nowMoscow.getUTCDate() + days);
             
             // Устанавливаем время на 18:00 МСК (конец рабочего дня)
-            deadlineMoscow.setUTCHours(18, 0, 0, 0);
+            // Битрикс интерпретирует UTC как МСК, поэтому добавляем 3 часа
+            // чтобы в битрикс попало 18:00 МСК, отправляем 21:00 МСК (18:00 + 3 часа)
+            deadlineMoscow.setUTCHours(21, 0, 0, 0);
             
-            // Форматируем для input[type="datetime-local"]
-            // deadlineMoscow уже представляет МСК время
-            const formattedDate = formatMoscowDateTime(deadlineMoscow);
+            // Для отображения в поле input показываем правильное МСК время (21:00 - 3 часа = 18:00)
+            const displayDate = new Date(deadlineMoscow.getTime() - (3 * 60 * 60 * 1000));
+            const formattedDate = formatMoscowDateTime(displayDate);
             
-            // Устанавливаем значение в поле
+            // Устанавливаем значение в поле (показываем 18:00 МСК)
             document.getElementById('deadline').value = formattedDate;
             
             // Показываем уведомление
@@ -1104,11 +1143,13 @@
                 15: '15 дней',
                 30: 'месяц'
             };
-            const day = String(deadlineMoscow.getUTCDate()).padStart(2, '0');
-            const month = String(deadlineMoscow.getUTCMonth() + 1).padStart(2, '0');
-            const year = deadlineMoscow.getUTCFullYear();
-            const hours = String(deadlineMoscow.getUTCHours()).padStart(2, '0');
-            const minutes = String(deadlineMoscow.getUTCMinutes()).padStart(2, '0');
+            // Для отображения показываем правильное МСК время (21:00 - 3 часа = 18:00)
+            const displayDate = new Date(deadlineMoscow.getTime() - (3 * 60 * 60 * 1000));
+            const day = String(displayDate.getUTCDate()).padStart(2, '0');
+            const month = String(displayDate.getUTCMonth() + 1).padStart(2, '0');
+            const year = displayDate.getUTCFullYear();
+            const hours = String(displayDate.getUTCHours()).padStart(2, '0');
+            const minutes = String(displayDate.getUTCMinutes()).padStart(2, '0');
             tg.showAlert(`✅ Срок установлен: через ${dayLabels[days] || days + ' дней'} (${day}.${month}.${year} в ${hours}:${minutes} МСК)`);
         }
         
@@ -1143,9 +1184,8 @@
             // Форматируем deadline если указан (интерпретируем как МСК)
             let deadlineValue = document.getElementById('deadline').value;
             if (deadlineValue) {
-                // Парсим введенное время как МСК и конвертируем в UTC для отправки на сервер
-                const moscowDate = parseMoscowDateTime(deadlineValue);
-                deadlineValue = moscowDate.toISOString().slice(0, 19).replace('T', ' ');
+                // Парсим введенное время как МСК и форматируем для отправки в битрикс
+                deadlineValue = parseMoscowDateTime(deadlineValue);
             }
             
             // Объединяем описание с оригинальным сообщением
