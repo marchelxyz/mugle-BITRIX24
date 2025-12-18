@@ -2498,6 +2498,9 @@ def main():
                 # API: Создание задачи из Mini App
                 async def miniapp_create_task_handler(request):
                     try:
+                        # Инициализируем переменные по умолчанию
+                        responsible_names = []
+                        
                         # Проверяем тип контента для определения формата данных
                         content_type = request.headers.get('Content-Type', '')
                         is_multipart = 'multipart/form-data' in content_type
@@ -2548,6 +2551,7 @@ def main():
                             title = data.get('title', '').strip()
                             creator_id = int(data.get('creator_id')) if data.get('creator_id') else None
                             responsible_ids_str = data.get('responsible_ids', '[]')
+                            responsible_names_str = data.get('responsible_names', '[]')
                             deadline = data.get('deadline')
                             description = data.get('description', '').strip()
                             department_id = int(data.get('department_id')) if data.get('department_id') else None
@@ -2557,6 +2561,12 @@ def main():
                                 responsible_ids = json.loads(responsible_ids_str) if isinstance(responsible_ids_str, str) else responsible_ids_str
                             except:
                                 responsible_ids = []
+                            
+                            # Парсим responsible_names из JSON строки
+                            try:
+                                responsible_names = json.loads(responsible_names_str) if isinstance(responsible_names_str, str) else (responsible_names_str if isinstance(responsible_names_str, list) else [])
+                            except:
+                                responsible_names = []
                         else:
                             # Обрабатываем JSON (без файлов)
                             data = await request.json()
@@ -2567,6 +2577,7 @@ def main():
                             creator_id = data.get('creator_id')
                             responsible_id = data.get('responsible_id')
                             responsible_ids = data.get('responsible_ids', [])
+                            responsible_names = data.get('responsible_names', [])  # Имена исполнителей из формы
                             deadline = data.get('deadline')
                             description = data.get('description', '').strip()
                             department_id = data.get('department_id')
@@ -2617,33 +2628,50 @@ def main():
                         if result.get("result") and result["result"].get("task"):
                             task_id = result["result"]["task"]["id"]
                             
-                            # Получаем реальную информацию о задаче из Bitrix для корректного отображения deadline
-                            task_info = None
-                            display_deadline = deadline
-                            try:
-                                task_info = bitrix_client.get_task_by_id(task_id)
-                                if task_info and task_info.get('deadline'):
-                                    # Получаем реальный deadline из Bitrix
-                                    bitrix_deadline = task_info.get('deadline')
-                                    # Форматируем для отображения в московском времени
-                                    display_deadline = format_deadline_for_display_from_bitrix(bitrix_deadline)
-                            except Exception as e:
-                                logger.debug(f"Не удалось получить информацию о задаче {task_id} для отображения deadline: {e}")
-                                # Используем исходное значение deadline
-                                if deadline:
-                                    display_deadline = format_deadline_for_display(deadline)
+                            # Форматируем deadline для отображения (используем переданное значение, не делаем лишний запрос)
+                            display_deadline = None
+                            if deadline:
+                                display_deadline = format_deadline_for_display(deadline)
                             
                             # Получаем ссылку на задачу
                             task_url = bitrix_client.get_task_url(task_id, creator_id)
                             
-                            # Получаем информацию о задаче для сообщения
-                            responsible_names = []
-                            for rid in final_responsible_ids:
-                                resp_info = bitrix_client.get_user_by_id(rid)
-                                if resp_info:
-                                    name = f"{resp_info.get('NAME', '')} {resp_info.get('LAST_NAME', '')}".strip()
-                                    if name:
-                                        responsible_names.append(name)
+                            # Используем переданные имена исполнителей из формы (быстро!)
+                            # Если имена не переданы, получаем их параллельно из API
+                            if responsible_names and len(responsible_names) == len(final_responsible_ids):
+                                # Используем переданные имена - это намного быстрее!
+                                responsible_names_list = responsible_names
+                            else:
+                                # Если имена не переданы или не совпадают по количеству, получаем их параллельно
+                                logger.debug(f"Имена исполнителей не переданы или не совпадают, получаем из API параллельно")
+                                
+                                # Выполняем запросы параллельно в отдельном потоке для каждого пользователя
+                                loop = asyncio.get_event_loop()
+                                
+                                async def get_user_name(user_id):
+                                    """Получает имя пользователя в отдельном потоке"""
+                                    try:
+                                        resp_info = await loop.run_in_executor(
+                                            None, 
+                                            bitrix_client.get_user_by_id, 
+                                            user_id
+                                        )
+                                        if resp_info:
+                                            name = f"{resp_info.get('NAME', '')} {resp_info.get('LAST_NAME', '')}".strip()
+                                            return name if name else None
+                                    except Exception as e:
+                                        logger.warning(f"Ошибка при получении имени пользователя {user_id}: {e}")
+                                    return None
+                                
+                                # Выполняем все запросы параллельно
+                                tasks = [get_user_name(rid) for rid in final_responsible_ids]
+                                names_results = await asyncio.gather(*tasks, return_exceptions=True)
+                                
+                                # Фильтруем успешные результаты
+                                responsible_names_list = [
+                                    name for name in names_results 
+                                    if name and not isinstance(name, Exception)
+                                ]
                             
                             # Формируем текст сообщения
                             response_text = (
@@ -2651,11 +2679,11 @@ def main():
                                 f"📋 Задача: {title}\n"
                             )
                             
-                            if responsible_names:
-                                if len(responsible_names) == 1:
-                                    response_text += f"👤 Ответственный: {responsible_names[0]}\n"
+                            if responsible_names_list:
+                                if len(responsible_names_list) == 1:
+                                    response_text += f"👤 Ответственный: {responsible_names_list[0]}\n"
                                 else:
-                                    response_text += f"👥 Ответственные ({len(responsible_names)}): {', '.join(responsible_names)}\n"
+                                    response_text += f"👥 Ответственные ({len(responsible_names_list)}): {', '.join(responsible_names_list)}\n"
                             
                             if display_deadline:
                                 response_text += f"📅 Срок: {display_deadline}\n"
