@@ -359,6 +359,65 @@ def parse_responsibles(responsibles_text: str) -> List[str]:
     return [name for name in names if name]
 
 
+def format_deadline_for_display(deadline: str) -> str:
+    """
+    Форматирует deadline для отображения в московском времени.
+    
+    Args:
+        deadline: Дедлайн в формате YYYY-MM-DD HH:MM:SS (без временной зоны)
+        
+    Returns:
+        Отформатированная строка с датой и временем в московском формате
+    """
+    try:
+        # Парсим deadline как naive datetime (без временной зоны)
+        deadline_dt = datetime.strptime(deadline, "%Y-%m-%d %H:%M:%S")
+        # Предполагаем, что это уже московское время (так как parse_deadline создает его в МСК)
+        # Возвращаем в том же формате для отображения
+        return deadline_dt.strftime("%Y-%m-%d %H:%M:%S")
+    except Exception as e:
+        logger.error(f"Ошибка форматирования deadline '{deadline}': {e}")
+        return deadline
+
+
+def format_deadline_for_display_from_bitrix(bitrix_deadline: str) -> str:
+    """
+    Форматирует deadline из Bitrix для отображения в московском времени.
+    
+    Bitrix может возвращать deadline в разных форматах:
+    - ISO формат с временной зоной (2025-12-18T10:00:00+00:00)
+    - Простой формат (2025-12-18 10:00:00)
+    
+    Args:
+        bitrix_deadline: Дедлайн из Bitrix API
+        
+    Returns:
+        Отформатированная строка с датой и временем в московском формате YYYY-MM-DD HH:MM:SS
+    """
+    try:
+        # Парсим deadline из Bitrix (может быть в разных форматах)
+        if 'T' in bitrix_deadline or 'Z' in bitrix_deadline:
+            # ISO формат с временной зоной
+            deadline_dt = datetime.fromisoformat(bitrix_deadline.replace('Z', '+00:00'))
+            # Конвертируем в московское время
+            if deadline_dt.tzinfo:
+                deadline_dt = deadline_dt.astimezone(MSK_TIMEZONE)
+            else:
+                # Если нет временной зоны, считаем что это UTC и конвертируем в МСК
+                deadline_dt = deadline_dt.replace(tzinfo=timezone.utc).astimezone(MSK_TIMEZONE)
+            # Убираем временную зону для форматирования
+            deadline_dt = deadline_dt.replace(tzinfo=None)
+        else:
+            # Простой формат YYYY-MM-DD HH:MM:SS (считаем что это уже в МСК)
+            deadline_dt = datetime.strptime(bitrix_deadline, '%Y-%m-%d %H:%M:%S')
+        
+        # Форматируем для отображения
+        return deadline_dt.strftime("%Y-%m-%d %H:%M:%S")
+    except Exception as e:
+        logger.error(f"Ошибка форматирования deadline из Bitrix '{bitrix_deadline}': {e}")
+        return bitrix_deadline
+
+
 def parse_deadline(deadline_text: str) -> Optional[str]:
     """
     Парсинг даты в различных форматах:
@@ -1528,6 +1587,22 @@ async def create_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if result.get("result") and result["result"].get("task"):
             task_id = result["result"]["task"]["id"]
             
+            # Получаем реальную информацию о задаче из Bitrix для корректного отображения deadline
+            task_info = None
+            display_deadline = deadline
+            try:
+                task_info = bitrix_client.get_task_by_id(task_id)
+                if task_info and task_info.get('deadline'):
+                    # Получаем реальный deadline из Bitrix
+                    bitrix_deadline = task_info.get('deadline')
+                    # Форматируем для отображения в московском времени
+                    display_deadline = format_deadline_for_display_from_bitrix(bitrix_deadline)
+            except Exception as e:
+                logger.debug(f"Не удалось получить информацию о задаче {task_id} для отображения deadline: {e}")
+                # Используем исходное значение deadline
+                if deadline:
+                    display_deadline = format_deadline_for_display(deadline)
+            
             # Формируем список ответственных
             responsibles_info = []
             for resp_id in responsible_ids:
@@ -1545,8 +1620,8 @@ async def create_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"👤 Ответственные: {', '.join(responsibles_info)}\n"
             )
             
-            if deadline:
-                response_text += f"📅 Срок: {deadline}\n"
+            if display_deadline:
+                response_text += f"📅 Срок: {display_deadline}\n"
             
             if description:
                 response_text += f"📝 Описание: {description[:100]}...\n" if len(description) > 100 else f"📝 Описание: {description}\n"
@@ -2542,6 +2617,22 @@ def main():
                         if result.get("result") and result["result"].get("task"):
                             task_id = result["result"]["task"]["id"]
                             
+                            # Получаем реальную информацию о задаче из Bitrix для корректного отображения deadline
+                            task_info = None
+                            display_deadline = deadline
+                            try:
+                                task_info = bitrix_client.get_task_by_id(task_id)
+                                if task_info and task_info.get('deadline'):
+                                    # Получаем реальный deadline из Bitrix
+                                    bitrix_deadline = task_info.get('deadline')
+                                    # Форматируем для отображения в московском времени
+                                    display_deadline = format_deadline_for_display_from_bitrix(bitrix_deadline)
+                            except Exception as e:
+                                logger.debug(f"Не удалось получить информацию о задаче {task_id} для отображения deadline: {e}")
+                                # Используем исходное значение deadline
+                                if deadline:
+                                    display_deadline = format_deadline_for_display(deadline)
+                            
                             # Получаем ссылку на задачу
                             task_url = bitrix_client.get_task_url(task_id, creator_id)
                             
@@ -2566,8 +2657,8 @@ def main():
                                 else:
                                     response_text += f"👥 Ответственные ({len(responsible_names)}): {', '.join(responsible_names)}\n"
                             
-                            if deadline:
-                                response_text += f"📅 Срок: {deadline}\n"
+                            if display_deadline:
+                                response_text += f"📅 Срок: {display_deadline}\n"
                             
                             if description:
                                 response_text += f"📝 Описание: {description[:100]}...\n" if len(description) > 100 else f"📝 Описание: {description}\n"
