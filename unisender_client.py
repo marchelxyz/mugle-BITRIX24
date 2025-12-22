@@ -51,13 +51,7 @@ class UnisenderClient:
             response = requests.post(url, data=params)
             response.raise_for_status()
             
-            # Парсим JSON ответ
-            try:
-                result = response.json()
-            except (ValueError, TypeError) as json_error:
-                error_msg = f"Ошибка парсинга JSON ответа от Unisender API: {json_error}. Ответ сервера: {response.text[:500]}"
-                logger.error(f"Ошибка Unisender API для метода {method}: {error_msg}")
-                raise Exception(f"Unisender API ошибка: {error_msg}")
+            result = response.json()
             
             # Проверяем, что результат является словарем
             if not isinstance(result, dict):
