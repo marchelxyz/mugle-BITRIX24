@@ -53,6 +53,12 @@ class UnisenderClient:
             
             result = response.json()
             
+            # Проверяем, что результат является словарем
+            if not isinstance(result, dict):
+                error_msg = f"Неожиданный тип ответа от Unisender API: {type(result).__name__}. Ожидался словарь, получено: {result}"
+                logger.error(f"Ошибка Unisender API для метода {method}: {error_msg}")
+                raise Exception(f"Unisender API ошибка: {error_msg}")
+            
             # Проверяем наличие ошибок в ответе
             if 'error' in result:
                 error_msg = result.get('error', 'Неизвестная ошибка')
@@ -67,6 +73,10 @@ class UnisenderClient:
         except json.JSONDecodeError as e:
             logger.error(f"Ошибка парсинга JSON ответа от Unisender API ({method}): {e}")
             logger.debug(f"Ответ сервера: {response.text[:500]}")
+            raise
+        except Exception as e:
+            # Перехватываем все остальные исключения и логируем их
+            logger.error(f"Неожиданная ошибка при запросе к Unisender API ({method}): {e}", exc_info=True)
             raise
     
     def send_email(
@@ -98,24 +108,39 @@ class UnisenderClient:
         Returns:
             Результат отправки с информацией о статусе
         """
-        params = {
-            'email': email,
-            'sender_name': sender_name,
-            'sender_email': sender_email,
-            'subject': subject,
-            'body': body,
-        }
-        
-        if list_id:
-            params['list_id'] = list_id
-        
-        if tags:
-            params['tags'] = ','.join(tags)
-        
-        # Добавляем дополнительные параметры
-        params.update(kwargs)
-        
-        return self._make_request('sendEmail', params)
+        try:
+            params = {
+                'email': email,
+                'sender_name': sender_name,
+                'sender_email': sender_email,
+                'subject': subject,
+                'body': body,
+            }
+            
+            if list_id:
+                params['list_id'] = list_id
+            
+            if tags:
+                params['tags'] = ','.join(tags)
+            
+            # Добавляем дополнительные параметры
+            params.update(kwargs)
+            
+            result = self._make_request('sendEmail', params)
+            
+            # Проверяем, что результат является словарем
+            if not isinstance(result, dict):
+                error_msg = f"Неожиданный тип ответа от Unisender API при отправке email: {type(result).__name__}. Ожидался словарь, получено: {result}"
+                logger.error(f"Неожиданная ошибка при отправке email на {email}: {error_msg}")
+                raise Exception(f"Unisender API ошибка: {error_msg}")
+            
+            return result
+            
+        except Exception as e:
+            # Логируем ошибку с правильным сообщением
+            error_msg = str(e)
+            logger.error(f"Неожиданная ошибка при отправке email на {email}: {error_msg}", exc_info=True)
+            raise
     
     def import_contacts(
         self,
