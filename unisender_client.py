@@ -80,12 +80,19 @@ class UnisenderClient:
             # Проверяем наличие ошибок в ответе согласно документации Unisender
             # Формат ошибки: {"error": "текст ошибки"} или {"error": "текст", "code": "код"}
             if isinstance(result, dict) and 'error' in result:
-                error_msg = result.get('error', 'Неизвестная ошибка')
+                error_value = result.get('error', 'Неизвестная ошибка')
                 error_code = result.get('code')
                 
-                # Если error_msg - это словарь, извлекаем сообщение
-                if isinstance(error_msg, dict):
-                    error_msg = error_msg.get('message', str(error_msg))
+                # Обрабатываем error_value в зависимости от его типа
+                if isinstance(error_value, dict):
+                    # Если error_value - это словарь, извлекаем сообщение
+                    error_msg = error_value.get('message', str(error_value))
+                elif isinstance(error_value, str):
+                    # Если error_value - это строка, используем её как есть
+                    error_msg = error_value
+                else:
+                    # В остальных случаях преобразуем в строку
+                    error_msg = str(error_value)
                 
                 # Формируем полное сообщение об ошибке
                 full_error_msg = str(error_msg)
