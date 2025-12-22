@@ -80,19 +80,12 @@ class UnisenderClient:
             # Проверяем наличие ошибок в ответе согласно документации Unisender
             # Формат ошибки: {"error": "текст ошибки"} или {"error": "текст", "code": "код"}
             if isinstance(result, dict) and 'error' in result:
-                error_value = result.get('error', 'Неизвестная ошибка')
+                error_msg = result.get('error', 'Неизвестная ошибка')
                 error_code = result.get('code')
                 
-                # Обрабатываем error_value в зависимости от его типа
-                if isinstance(error_value, dict):
-                    # Если error_value - это словарь, извлекаем сообщение
-                    error_msg = error_value.get('message', str(error_value))
-                elif isinstance(error_value, str):
-                    # Если error_value - это строка, используем её как есть
-                    error_msg = error_value
-                else:
-                    # В остальных случаях преобразуем в строку
-                    error_msg = str(error_value)
+                # Если error_msg - это словарь, извлекаем сообщение
+                if isinstance(error_msg, dict):
+                    error_msg = error_msg.get('message', str(error_msg))
                 
                 # Формируем полное сообщение об ошибке
                 full_error_msg = str(error_msg)
@@ -167,45 +160,22 @@ class UnisenderClient:
             # Добавляем дополнительные параметры
             params.update(kwargs)
             
-            logger.info(f"📧 Отправка email на {email} через Unisender API")
             result = self._make_request('sendEmail', params)
-            
-            # Подробное логирование результата для диагностики
-            logger.debug(f"Ответ от Unisender API при отправке email на {email}: тип={type(result).__name__}, значение={result}")
             
             # Проверяем, что результат является словарем
             if not isinstance(result, dict):
                 error_msg = f"Неожиданный тип ответа от Unisender API при отправке email: {type(result).__name__}. Ожидался словарь, получено: {result}"
                 logger.error(f"Неожиданная ошибка при отправке email на {email}: {error_msg}")
-                logger.error(f"Детали результата: тип={type(result)}, значение={result}, repr={repr(result)}")
                 raise Exception(f"Unisender API ошибка: {error_msg}")
             
-            # Логируем структуру результата для диагностики
-            logger.debug(f"Структура результата отправки email на {email}: ключи={list(result.keys()) if isinstance(result, dict) else 'N/A'}")
-            
-            # Проверяем наличие ошибок в результате (на случай, если они не были обработаны в _make_request)
-            if isinstance(result, dict) and 'error' in result:
-                error_value = result.get('error')
-                logger.warning(f"Обнаружена ошибка в результате отправки email на {email}: {error_value}")
-            
             # Согласно документации Unisender, успешные ответы содержат поле 'result'
-            # Логируем успешную отправку
-            if isinstance(result, dict) and 'result' in result:
-                logger.info(f"✅ Email успешно отправлен на {email}. Результат: {result.get('result')}")
-            else:
-                logger.warning(f"⚠️ Ответ от Unisender API для {email} не содержит поле 'result': {result}")
-            
             # Возвращаем весь ответ (включая поле 'result' если оно есть)
             return result
             
         except Exception as e:
-            # Логируем ошибку с правильным сообщением и подробной информацией
+            # Логируем ошибку с правильным сообщением
             error_msg = str(e)
-            error_type = type(e).__name__
-            logger.error(f"❌ Неожиданная ошибка при отправке email на {email}: {error_msg}")
-            logger.error(f"   Тип ошибки: {error_type}")
-            logger.error(f"   Параметры запроса: email={email}, sender_email={sender_email}, subject={subject[:50]}...")
-            logger.error(f"   Детали исключения:", exc_info=True)
+            logger.error(f"Неожиданная ошибка при отправке email на {email}: {error_msg}", exc_info=True)
             raise
     
     def import_contacts(
@@ -387,75 +357,3 @@ class UnisenderClient:
         params.update(kwargs)
         
         return self._make_request('createEmailMessage', params)
-    
-    def send_email_safe(
-        self,
-        email: str,
-        sender_name: str,
-        sender_email: str,
-        subject: str,
-        body: str,
-        list_id: Optional[int] = None,
-        tags: Optional[List[str]] = None,
-        **kwargs
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Безопасная обертка над send_email с улучшенной обработкой ошибок и логированием
-        
-        Эта функция безопасно вызывает send_email и обрабатывает результат,
-        избегая ошибок типа 'str' object has no attribute 'get'
-        
-        Args:
-            email: Email адрес получателя
-            sender_name: Имя отправителя
-            sender_email: Email адрес отправителя
-            subject: Тема письма
-            body: Тело письма (HTML или текст)
-            list_id: ID списка контактов (опционально)
-            tags: Список тегов для контакта (опционально)
-            **kwargs: Дополнительные параметры
-            
-        Returns:
-            Результат отправки (словарь) или None в случае ошибки
-        """
-        try:
-            logger.info(f"🔵 Вызов send_email_safe для {email}")
-            result = self.send_email(
-                email=email,
-                sender_name=sender_name,
-                sender_email=sender_email,
-                subject=subject,
-                body=body,
-                list_id=list_id,
-                tags=tags,
-                **kwargs
-            )
-            
-            # Подробное логирование результата
-            logger.debug(f"Результат send_email для {email}: тип={type(result).__name__}")
-            
-            # Проверяем, что результат - это словарь
-            if not isinstance(result, dict):
-                logger.error(f"⚠️ send_email вернул не словарь для {email}: тип={type(result).__name__}, значение={result}")
-                return None
-            
-            # Безопасная обработка результата
-            if 'error' in result:
-                error_value = result.get('error')
-                logger.warning(f"⚠️ Ошибка в результате отправки email на {email}: {error_value}")
-                return result
-            
-            if 'result' in result:
-                result_data = result.get('result')
-                logger.info(f"✅ Email успешно отправлен на {email}. Результат: {result_data}")
-                return result
-            
-            logger.warning(f"⚠️ Неожиданный формат результата для {email}: {result}")
-            return result
-            
-        except Exception as e:
-            error_type = type(e).__name__
-            error_msg = str(e)
-            logger.error(f"❌ Ошибка в send_email_safe для {email}: {error_type} - {error_msg}")
-            logger.error(f"   Детали исключения:", exc_info=True)
-            return None
