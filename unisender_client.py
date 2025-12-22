@@ -51,26 +51,52 @@ class UnisenderClient:
             response = requests.post(url, data=params)
             response.raise_for_status()
             
-            # Парсим JSON ответ
+            # Парсим JSON ответ согласно документации Unisender
+            # API всегда возвращает JSON в формате {"result": {...}} или {"error": "..."}
             try:
                 result = response.json()
-            except (ValueError, TypeError) as json_error:
+                logger.debug(f"Ответ от Unisender API ({method}): тип={type(result).__name__}, ключи={list(result.keys()) if isinstance(result, dict) else 'N/A'}")
+            except (ValueError, TypeError, json.JSONDecodeError) as json_error:
                 error_msg = f"Ошибка парсинга JSON ответа от Unisender API: {json_error}. Ответ сервера: {response.text[:500]}"
                 logger.error(f"Ошибка Unisender API для метода {method}: {error_msg}")
                 raise Exception(f"Unisender API ошибка: {error_msg}")
             
             # Проверяем, что результат является словарем
+            # Если результат - строка (не должно быть согласно документации, но обрабатываем для надежности)
+            if isinstance(result, str):
+                logger.warning(f"Unisender API вернул строку вместо словаря для метода {method}: {result[:100]}")
+                try:
+                    result = json.loads(result)
+                except (ValueError, TypeError, json.JSONDecodeError):
+                    error_msg = f"Неожиданный тип ответа от Unisender API: строка '{result[:100]}'. Ожидался словарь."
+                    logger.error(f"Ошибка Unisender API для метода {method}: {error_msg}")
+                    raise Exception(f"Unisender API ошибка: {error_msg}")
+            
             if not isinstance(result, dict):
                 error_msg = f"Неожиданный тип ответа от Unisender API: {type(result).__name__}. Ожидался словарь, получено: {result}"
                 logger.error(f"Ошибка Unisender API для метода {method}: {error_msg}")
                 raise Exception(f"Unisender API ошибка: {error_msg}")
             
-            # Проверяем наличие ошибок в ответе
-            if 'error' in result:
+            # Проверяем наличие ошибок в ответе согласно документации Unisender
+            # Формат ошибки: {"error": "текст ошибки"} или {"error": "текст", "code": "код"}
+            if isinstance(result, dict) and 'error' in result:
                 error_msg = result.get('error', 'Неизвестная ошибка')
-                logger.error(f"Ошибка Unisender API для метода {method}: {error_msg}")
-                raise Exception(f"Unisender API ошибка: {error_msg}")
+                error_code = result.get('code')
+                
+                # Если error_msg - это словарь, извлекаем сообщение
+                if isinstance(error_msg, dict):
+                    error_msg = error_msg.get('message', str(error_msg))
+                
+                # Формируем полное сообщение об ошибке
+                full_error_msg = str(error_msg)
+                if error_code:
+                    full_error_msg = f"{error_msg} (код: {error_code})"
+                
+                logger.error(f"Ошибка Unisender API для метода {method}: {full_error_msg}")
+                raise Exception(f"Unisender API ошибка: {full_error_msg}")
             
+            # Согласно документации Unisender, успешные ответы содержат ключ 'result'
+            # Возвращаем весь ответ, включая поле 'result' если оно есть
             return result
             
         except requests.exceptions.RequestException as e:
@@ -112,7 +138,9 @@ class UnisenderClient:
             **kwargs: Дополнительные параметры (wrap_type, attachments и т.д.)
             
         Returns:
-            Результат отправки с информацией о статусе
+            Результат отправки с информацией о статусе.
+            Согласно документации Unisender, успешный ответ имеет формат:
+            {"result": {"email_id": "...", "status": "..."}}
         """
         try:
             params = {
@@ -140,6 +168,8 @@ class UnisenderClient:
                 logger.error(f"Неожиданная ошибка при отправке email на {email}: {error_msg}")
                 raise Exception(f"Unisender API ошибка: {error_msg}")
             
+            # Согласно документации Unisender, успешные ответы содержат поле 'result'
+            # Возвращаем весь ответ (включая поле 'result' если оно есть)
             return result
             
         except Exception as e:
