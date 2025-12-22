@@ -41,12 +41,6 @@ except ImportError:
     TASK_NOTIFICATIONS_AVAILABLE = False
     logger.warning("⚠️ Модуль task_notifications не найден. Уведомления о задачах будут недоступны.")
 try:
-    from unisender_client import UnisenderClient
-    UNISENDER_AVAILABLE = True
-except ImportError:
-    UNISENDER_AVAILABLE = False
-    logger.warning("⚠️ Модуль unisender_client не найден. Интеграция с Unisender будет недоступна.")
-try:
     from aiohttp import web
     AIOHTTP_AVAILABLE = True
 except ImportError:
@@ -72,20 +66,6 @@ bitrix_client = Bitrix24Client(
     webhook_token=os.getenv("BITRIX24_WEBHOOK_TOKEN"),
     telegram_field_name=os.getenv("BITRIX24_TELEGRAM_FIELD_NAME", "UF_USR_TELEGRAM")
 )
-
-# Инициализация клиента Unisender (опционально)
-unisender_client = None
-if UNISENDER_AVAILABLE:
-    try:
-        unisender_api_key = os.getenv("UNISENDER_API_KEY")
-        if unisender_api_key:
-            unisender_client = UnisenderClient(api_key=unisender_api_key)
-            logger.info("✅ Клиент Unisender успешно инициализирован")
-        else:
-            logger.info("ℹ️ UNISENDER_API_KEY не установлен. Интеграция с Unisender отключена.")
-    except Exception as e:
-        logger.error(f"❌ Ошибка при инициализации клиента Unisender: {e}", exc_info=True)
-        UNISENDER_AVAILABLE = False
 
 # Состояния диалога
 WAITING_FOR_RESPONSIBLES, WAITING_FOR_DEADLINE, WAITING_FOR_DESCRIPTION = range(3)
