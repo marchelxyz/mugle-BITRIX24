@@ -1667,9 +1667,16 @@ async def create_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Отмена создания задачи"""
-    context.user_data.clear()
-    await update.message.reply_text("❌ Создание задачи отменено.")
-    return ConversationHandler.END
+    # Проверяем, есть ли активный диалог создания задачи
+    # ConversationHandler использует ключи в user_data для отслеживания состояния
+    if context.user_data and len(context.user_data) > 0:
+        context.user_data.clear()
+        await update.message.reply_text("❌ Создание задачи отменено.")
+        return ConversationHandler.END
+    else:
+        # Если диалога нет, просто сообщаем об этом
+        await update.message.reply_text("ℹ️ Нет активного процесса создания задачи для отмены.")
+        return ConversationHandler.END
 
 
 async def handle_reply_with_mention(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2128,6 +2135,10 @@ def main():
     application.add_handler(MessageHandler(
         filters.TEXT & filters.Regex(r'^/webhook(@\w+)?(\s|$)'),
         webhook_detail_command
+    ))
+    application.add_handler(MessageHandler(
+        filters.TEXT & filters.Regex(r'^/cancel(@\w+)?(\s|$)'),
+        cancel
     ))
     
     # Обработчик для reply-сообщений с упоминанием бота
