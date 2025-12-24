@@ -721,6 +721,17 @@ class Bitrix24Client:
             # В Bitrix24 API метод user.get может не возвращать пользовательские поля по умолчанию
             # Пробуем сначала без SELECT - это должно вернуть все поля включая пользовательские
             result = self._make_request("user.get", {"ID": user_id})
+            
+            # Проверяем наличие ошибок в ответе
+            if result.get("error"):
+                error_code = result.get("error", "")
+                error_description = result.get("error_description", "")
+                logger.warning(
+                    f"Ошибка Bitrix API при получении пользователя {user_id}: "
+                    f"{error_code} - {error_description}"
+                )
+                return None
+            
             if result.get("result"):
                 user_data = result["result"][0] if isinstance(result["result"], list) else result["result"]
                 
@@ -741,8 +752,14 @@ class Bitrix24Client:
                         logger.debug(f"Ошибка при запросе с SELECT: {select_error}")
                 
                 return user_data
+            else:
+                logger.warning(f"Пользователь {user_id} не найден в Bitrix24 (пустой результат)")
+                return None
+        except requests.exceptions.HTTPError as e:
+            logger.error(f"HTTP ошибка при получении пользователя {user_id}: {e}")
+            return None
         except Exception as e:
-            logger.debug(f"Ошибка при получении пользователя {user_id}: {e}")
+            logger.error(f"Ошибка при получении пользователя {user_id}: {e}", exc_info=True)
         return None
     
     def search_users(self, query: str) -> List[Dict]:

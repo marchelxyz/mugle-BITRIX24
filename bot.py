@@ -1186,8 +1186,16 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def link_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда для связывания Telegram User ID с ID пользователя Битрикс24"""
+    # Проверяем, что обновление содержит сообщение
+    if not update.message and not update.effective_message:
+        logger.warning("Получено обновление без сообщения в функции link_user")
+        return
+    
+    message = update.message or update.effective_message
+    chat = update.effective_chat
+    
     if not context.args or len(context.args) < 1:
-        await update.message.reply_text(
+        await message.reply_text(
             "Использование: /link bitrix_user_id\n\n"
             "Пример: /link 123\n\n"
             "Эта команда свяжет ваш Telegram аккаунт с пользователем Битрикс24.\n"
@@ -1203,8 +1211,13 @@ async def link_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Проверяем, существует ли пользователь в Битрикс24
         user_info = bitrix_client.get_user_by_id(bitrix_user_id)
         if not user_info:
-            await update.message.reply_text(
-                f"❌ Пользователь с ID {bitrix_user_id} не найден в Битрикс24"
+            await message.reply_text(
+                f"❌ Пользователь с ID {bitrix_user_id} не найден в Битрикс24\n\n"
+                f"Возможные причины:\n"
+                f"1. Пользователь не существует или удален\n"
+                f"2. У вебхука нет прав на просмотр этого пользователя (user.get)\n"
+                f"3. Пользователь скрыт или неактивен\n"
+                f"4. Неверный ID пользователя"
             )
             return
         
@@ -1256,7 +1269,7 @@ async def link_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             response_text += f"💡 Бот будет автоматически определять ваш аккаунт по связи!"
             
-            await update.message.reply_text(response_text)
+            await message.reply_text(response_text)
         else:
             # Если не удалось сохранить в БД, но сохранили в локальное хранилище
             response_text = (
@@ -1270,12 +1283,12 @@ async def link_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"3. Проверьте логи для деталей ошибки\n\n"
                 f"💡 Бот будет работать с локальным хранилищем, но связь может быть потеряна при перезапуске."
             )
-            await update.message.reply_text(response_text)
+            await message.reply_text(response_text)
     except ValueError:
-        await update.message.reply_text("❌ ID пользователя должен быть числом")
+        await message.reply_text("❌ ID пользователя должен быть числом")
     except Exception as e:
         logger.error(f"Ошибка при связывании пользователя: {e}", exc_info=True)
-        await update.message.reply_text(
+        await message.reply_text(
             f"❌ Произошла ошибка при связывании аккаунта. Попробуйте позже."
         )
 
