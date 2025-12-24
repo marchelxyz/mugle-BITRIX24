@@ -714,16 +714,83 @@ async def create_task_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         "timestamp": datetime.now(MSK_TIMEZONE).isoformat()
     }
     
-    # Формируем URL для Mini App
+    # Получаем username бота для создания Direct Link Mini App
+    bot_username = context.bot.username
+    if not bot_username:
+        logger.error("Bot username не установлен, невозможно создать Direct Link Mini App")
+        await update.message.reply_text(
+            "⚠️ Ошибка конфигурации: username бота не установлен. Обратитесь к администратору."
+        )
+        return
+    
+    # Для Direct Link Mini Apps используем формат: https://t.me/botusername?startapp=token
+    # Это позволяет открывать Mini App как мини-апп из публичных групп
+    direct_link_url = f"https://t.me/{bot_username}?startapp={session_token}"
+    
+    # Также формируем прямой URL для Mini App (используется для приватных чатов)
     query_params = urlencode({"token": session_token})
     web_app_url = f"{webhook_url}/miniapp?{query_params}"
-    web_app_info = WebAppInfo(url=web_app_url)
     
-    button = InlineKeyboardButton(
-        "📋 Открыть форму создания задачи",
-        web_app=web_app_info
-    )
-    keyboard = InlineKeyboardMarkup([[button]])
+    # Проверяем тип чата
+    # Web App кнопки работают только в приватных чатах согласно документации
+    # Для публичных групп используем Direct Link Mini App формат
+    chat_type = update.message.chat.type if hasattr(update.message.chat, 'type') else None
+    is_private_chat = chat_type == 'private'
+    
+    logger.info(f"Тип чата определен: {chat_type}, приватный: {is_private_chat}")
+    
+    try:
+        if is_private_chat:
+            # Для приватных чатов используем Web App кнопку с прямым URL
+            web_app_info = WebAppInfo(url=web_app_url)
+            logger.info(f"WebAppInfo создан успешно для приватного чата, URL: {web_app_url[:100]}...")
+            
+            button = InlineKeyboardButton(
+                "📋 Открыть форму создания задачи",
+                web_app=web_app_info
+            )
+            logger.info(f"Web App кнопка создана успешно")
+        else:
+            # Для групповых чатов используем Direct Link Mini App формат
+            logger.info(f"Используем Direct Link Mini App для группового чата")
+            button = InlineKeyboardButton(
+                "📋 Открыть форму создания задачи",
+                url=direct_link_url
+            )
+            logger.info(f"Direct Link Mini App кнопка создана успешно")
+        
+        keyboard = InlineKeyboardMarkup([[button]])
+        logger.info(f"Клавиатура создана успешно")
+        
+    except TypeError as e:
+        # TypeError может возникнуть, если неправильные параметры
+        logger.error(f"TypeError при создании кнопки: {e}", exc_info=True)
+        # Fallback: используем обычную URL кнопку
+        logger.info("Попытка создать обычную URL кнопку как fallback")
+        try:
+            button = InlineKeyboardButton("📋 Открыть форму создания задачи", url=web_app_url)
+            keyboard = InlineKeyboardMarkup([[button]])
+            logger.info("URL кнопка создана как fallback")
+        except Exception as fallback_error:
+            logger.error(f"Ошибка при создании fallback кнопки: {fallback_error}", exc_info=True)
+            await update.message.reply_text(
+                "⚠️ Ошибка при создании кнопки. Попробуйте позже."
+            )
+            return
+    except Exception as e:
+        logger.error(f"Ошибка при создании кнопки: {e}", exc_info=True)
+        # Fallback: используем обычную URL кнопку
+        logger.info("Попытка создать обычную URL кнопку как fallback")
+        try:
+            button = InlineKeyboardButton("📋 Открыть форму создания задачи", url=web_app_url)
+            keyboard = InlineKeyboardMarkup([[button]])
+            logger.info("URL кнопка создана как fallback")
+        except Exception as fallback_error:
+            logger.error(f"Ошибка при создании fallback кнопки: {fallback_error}", exc_info=True)
+            await update.message.reply_text(
+                "⚠️ Ошибка при создании кнопки. Попробуйте позже."
+            )
+            return
     
     await update.message.reply_text(
         "📋 Нажмите кнопку ниже, чтобы открыть форму создания задачи:",
