@@ -1207,7 +1207,49 @@ async def link_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message or update.effective_message
     chat = update.effective_chat
     
-    if not context.args or len(context.args) < 1:
+    # Извлекаем аргументы из текста сообщения
+    # Поддерживаем форматы: /link 123, /link123, /link@bot 123, /link@bot123
+    text = message.text or ""
+    logger.info(f"🔍 Обработка команды /link. Текст сообщения: '{text}'")
+    logger.info(f"🔍 context.args: {context.args}")
+    
+    # Извлекаем ID из текста сообщения
+    # Поддерживаем форматы: /link 123, /link123, /link@bot 123, /link@bot123
+    bitrix_id_str = None
+    
+    # Сначала пробуем использовать context.args (если доступен)
+    if context.args and len(context.args) >= 1:
+        bitrix_id_str = context.args[0].strip()
+        logger.info(f"🔍 Использован context.args[0]: '{bitrix_id_str}'")
+    
+    # Если не получилось через context.args, извлекаем из текста
+    if not bitrix_id_str:
+        # Удаляем имя бота если есть (например, /link@bot_username)
+        text_clean = re.sub(r'^/link(@\w+)?', '/link', text)
+        logger.info(f"🔍 Очищенный текст: '{text_clean}'")
+        
+        # Сначала пробуем разбить текст по пробелам (самый простой случай: /link 123)
+        parts = text_clean.split(None, 1)
+        logger.info(f"🔍 Части текста после split: {parts}")
+        
+        if len(parts) >= 2:
+            # Есть аргумент после пробела
+            second_part = parts[1].strip()
+            # Извлекаем первую последовательность цифр
+            match = re.search(r'(\d+)', second_part)
+            if match:
+                bitrix_id_str = match.group(1)
+                logger.info(f"🔍 Извлечен из parts[1] через regex: '{bitrix_id_str}'")
+        else:
+            # Нет пробела, пробуем извлечь ID напрямую из текста (случай /link123)
+            match = re.search(r'/link\s*(\d+)', text_clean)
+            if match:
+                bitrix_id_str = match.group(1)
+                logger.info(f"🔍 Извлечен Bitrix ID через regex (без пробела): '{bitrix_id_str}'")
+    
+    # Проверяем, удалось ли извлечь ID
+    if not bitrix_id_str:
+        logger.warning(f"⚠️ Не удалось извлечь Bitrix ID из текста: '{text}'")
         await message.reply_text(
             "Использование: /link bitrix_user_id\n\n"
             "Пример: /link 123\n\n"
@@ -1217,9 +1259,11 @@ async def link_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     telegram_user_id = update.effective_user.id
+    logger.info(f"🔍 Telegram User ID: {telegram_user_id}, Bitrix ID строка: '{bitrix_id_str}'")
     
     try:
-        bitrix_user_id = int(context.args[0])
+        bitrix_user_id = int(bitrix_id_str)
+        logger.info(f"🔍 Преобразован Bitrix ID: {bitrix_user_id}")
         
         # Проверяем, существует ли пользователь в Битрикс24
         user_info = bitrix_client.get_user_by_id(bitrix_user_id)
@@ -2201,8 +2245,9 @@ def main():
         filters.TEXT & filters.Regex(r'^/help(@\w+)?(\s|$)'),
         help_command
     ))
+    # Обработчик команды /link - проверяем только начало команды
     application.add_handler(MessageHandler(
-        filters.TEXT & filters.Regex(r'^/link(@\w+)?(\s|$)'),
+        filters.TEXT & filters.Regex(r'^/link'),
         link_user
     ))
     application.add_handler(MessageHandler(
