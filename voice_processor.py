@@ -215,9 +215,14 @@ class VoiceTaskProcessor:
             if telegram_user_id and self.bitrix_client:
                 try:
                     logger.info(f"🔍 Поиск пользователя по Telegram ID: {telegram_user_id} (тип: {type(telegram_user_id)})")
-                    creator_info = self.bitrix_client.get_user_by_telegram_id(telegram_user_id)
-                    if creator_info:
-                        logger.info(f"👤 Найден создатель задачи: {creator_info.get('NAME', '')} {creator_info.get('LAST_NAME', '')} (ID: {creator_info.get('ID')})")
+                    
+                    # Используем ту же логику, что и в мини-приложении
+                    from bot import get_bitrix_user_id_by_telegram_id
+                    creator_bitrix_id = get_bitrix_user_id_by_telegram_id(telegram_user_id)
+                    
+                    if creator_bitrix_id:
+                        creator_info = self.bitrix_client.get_user_by_id(creator_bitrix_id)
+                        logger.info(f"👤 Найден создатель задачи: {creator_info.get('NAME', '')} {creator_info.get('LAST_NAME', '')} (Bitrix ID: {creator_bitrix_id})")
                     else:
                         logger.warning(f"⚠️ Пользователь с Telegram ID {telegram_user_id} не найден в Bitrix24")
                 except Exception as e:
