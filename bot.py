@@ -2268,17 +2268,14 @@ async def confirm_voice_task_callback(query, context: ContextTypes.DEFAULT_TYPE)
             warning_text = ""
         
         # Создаем задачу в Bitrix24
-        task_data_bitrix = {
-            'TITLE': task_data.get('title', 'Задача из голосового сообщения'),
-            'DESCRIPTION': task_data.get('description', ''),
-            'RESPONSIBLE_ID': responsible_bitrix_ids[0],  # Основной ответственный
-            'CREATED_BY': creator_bitrix_id,
-            'DEADLINE': task_data.get('deadline'),
-            'TAGS': 'голосовое_сообщение',
-            'PRIORITY': task_data.get('priority', 'medium')  # Добавляем приоритет
-        }
-        
-        task_result = bitrix_client.create_task(task_data_bitrix)
+        task_result = bitrix_client.create_task(
+            title=task_data.get('title', 'Задача из голосового сообщения'),
+            responsible_ids=responsible_bitrix_ids,
+            creator_id=creator_bitrix_id,
+            description=task_data.get('description', ''),
+            deadline=task_data.get('deadline'),
+            files=None
+        )
         
         if task_result and 'result' in task_result and 'task' in task_result['result']:
             task_id = task_result['result']['task']['id']
@@ -2352,17 +2349,14 @@ async def confirm_voice_task(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
         
         # Создаем задачу в Bitrix24
-        task_data_bitrix = {
-            'TITLE': task_data.get('title', 'Задача из голосового сообщения'),
-            'DESCRIPTION': task_data.get('description', ''),
-            'RESPONSIBLE_ID': responsible_bitrix_ids[0],  # Основной ответственный
-            'CREATED_BY': creator_bitrix_id,
-            'DEADLINE': task_data.get('deadline'),
-            'TAGS': 'голосовое_сообщение',
-            'PRIORITY': task_data.get('priority', 'medium')  # Добавляем приоритет
-        }
-        
-        task_result = bitrix_client.create_task(task_data_bitrix)
+        task_result = bitrix_client.create_task(
+            title=task_data.get('title', 'Задача из голосового сообщения'),
+            responsible_ids=responsible_bitrix_ids,
+            creator_id=creator_bitrix_id,
+            description=task_data.get('description', ''),
+            deadline=task_data.get('deadline'),
+            files=None
+        )
         
         if task_result and 'result' in task_result and 'task' in task_result['result']:
             task_id = task_result['result']['task']['id']
