@@ -252,8 +252,9 @@ class VoiceTaskProcessor:
             try:
                 if os.path.exists(file_path):
                     os.unlink(file_path)
+                    logger.debug(f"🗑️ Удален временный файл: {file_path}")
             except Exception as e:
-                logger.warning(f"Не удалось удалить файл {file_path}: {e}")
+                logger.warning(f"⚠️ Ошибка удаления файла {file_path}: {e}")
     
     async def _transcribe_audio(self, voice_file: bytes) -> Optional[str]:
         """
