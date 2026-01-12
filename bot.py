@@ -2252,8 +2252,10 @@ async def confirm_voice_task_callback(query, context: ContextTypes.DEFAULT_TYPE)
         # Ищем ответственных в Bitrix24
         responsible_bitrix_ids = []
         for responsible_name in task_data.get('responsibles', []):
-            user_id = bitrix_client.find_user_by_name(responsible_name.strip())
+            user_id = bitrix_client.search_users(responsible_name.strip())
             if user_id:
+                # Берем первого найденного пользователя
+                user_id = user_id[0]['ID']
                 responsible_bitrix_ids.append(user_id)
             else:
                 logger.warning(f"Пользователь не найден в Bitrix24: {responsible_name}")
@@ -2334,8 +2336,10 @@ async def confirm_voice_task(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # Ищем ответственных в Bitrix24
         responsible_bitrix_ids = []
         for responsible_name in task_data.get('responsibles', []):
-            user_id = bitrix_client.find_user_by_name(responsible_name.strip())
+            user_id = bitrix_client.search_users(responsible_name.strip())
             if user_id:
+                # Берем первого найденного пользователя
+                user_id = user_id[0]['ID']
                 responsible_bitrix_ids.append(user_id)
             else:
                 logger.warning(f"Пользователь не найден в Bitrix24: {responsible_name}")
