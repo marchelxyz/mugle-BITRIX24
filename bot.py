@@ -2271,14 +2271,21 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
             f"📝 Распознанный текст: \"{original_text}\"\n\n🤖 Анализирую запрос..."
         )
         
-        # Если уверенность низкая, задаем уточняющие вопросы
-        if confidence < 0.5:
+        # Если уверенность низкая или нет ответственных, задаем уточняющие вопросы
+        needs_clarification = confidence < 0.5 or not task_data.get('responsibles')
+        
+        if needs_clarification:
             questions = voice_processor.generate_clarification_questions(task_data)
             
             if questions:
                 response_text = "🤔 Нужны уточнения по задаче:\n\n"
                 response_text += "\n".join(f"• {q}" for q in questions)
-                response_text += "\n\nПожалуйста, отправьте уточнения текстом или используйте /create для ручного ввода."
+                
+                if not task_data.get('responsibles'):
+                    response_text += "\n\n💡 Вы можете:"
+                    response_text += "\n• Указать ответственных текстом (например: \"Иван, Мария\")"
+                    response_text += "\n• Использовать /create для ручного создания задачи"
+                    response_text += "\n• Отправить новое голосовое сообщение с уточнением"
                 
                 await processing_message.edit_text(response_text)
                 
@@ -2331,6 +2338,98 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
     except Exception as e:
         logger.error(f"Ошибка обработки голосового сообщения: {e}", exc_info=True)
         await update.message.reply_text("❌ Произошла ошибка при обработке голосового сообщения. Попробуйте позже.")
+
+
+async def handle_voice_clarification(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Обработчик текстовых уточнений для голосовых сообщений
+    """
+    # Проверяем, есть ли ожидающая задача из голосового сообщения
+    pending_task = context.user_data.get('pending_voice_task')
+    
+    if not pending_task:
+        return  # Не обрабатываем, если нет ожидающей задачи
+    
+    try:
+        # Получаем текст уточнения
+        clarification_text = update.message.text.strip()
+        
+        if not clarification_text:
+            return
+        
+        logger.info(f"📝 Получено уточнение к голосовой задаче: {clarification_text}")
+        
+        # Обновляем данные задачи на основе уточнения
+        updated_task = pending_task.copy()
+        
+        # Ищем ответственных в тексте уточнения
+        if not updated_task.get('responsibles'):
+            # Простые паттерны для поиска имен
+            names = []
+            
+            # Разделяем по запятым и "и"
+            parts = re.split(r'[,и]\s*', clarification_text)
+            for part in parts:
+                part = part.strip()
+                if len(part) > 2 and len(part) < 50:  # Разумная длина имени
+                    names.append(part)
+            
+            if names:
+                updated_task['responsibles'] = names
+                logger.info(f"👥 Найдены ответственные в уточнении: {names}")
+        
+        # Проверяем, что теперь есть ответственные
+        if updated_task.get('responsibles'):
+            # Показываем обновленные данные задачи
+            response_text = "✅ Задача обновлена с учетом уточнений:\n\n"
+            
+            # Добавляем информацию о создателе
+            creator_info = pending_task.get('creator_info')
+            if creator_info:
+                creator_name = creator_info.get('NAME', '') + ' ' + creator_info.get('LAST_NAME', '')
+                creator_name = creator_name.strip()
+                if creator_name:
+                    response_text += f"👤 Поставщик задачи: {creator_name}\n"
+            
+            response_text += f"📋 Заголовок: {updated_task.get('title', 'Не определен')}\n"
+            response_text += f"👥 Ответственные: {', '.join(updated_task['responsibles'])}\n"
+            
+            if updated_task.get('deadline'):
+                response_text += f"📅 Дедлайн: {updated_task['deadline']}\n"
+            
+            if updated_task.get('priority'):
+                priority_emoji = {'low': '🔵', 'medium': '🟡', 'high': '🔴'}.get(updated_task['priority'], '⚪')
+                response_text += f"🎯 Приоритет: {priority_emoji} {updated_task['priority'].title()}\n"
+            
+            if updated_task.get('description'):
+                response_text += f"📝 Описание: {updated_task['description']}\n"
+            
+            response_text += f"\nСоздать эту задачу?"
+            
+            # Создаем инлайн кнопки
+            keyboard = [
+                [
+                    InlineKeyboardButton("✅ Создать задачу", callback_data="confirm_voice_create"),
+                    InlineKeyboardButton("❌ Отменить", callback_data="confirm_voice_cancel")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            # Обновляем ожидающую задачу
+            context.user_data['pending_voice_task'] = updated_task
+            
+            await update.message.reply_text(response_text, reply_markup=reply_markup)
+        else:
+            # Если все еще не найдены ответственные
+            await update.message.reply_text(
+                "🤔 Не удалось найти ответственных в уточнении.\n\n"
+                "Пожалуйста, укажите имена более четко (например: \"Иван Петров\") "
+                "или используйте /create для ручного создания задачи."
+            )
+        
+    except Exception as e:
+        logger.error(f"Ошибка обработки уточнения к голосовой задаче: {e}", exc_info=True)
+        await update.message.reply_text("❌ Произошла ошибка при обработке уточнения. Попробуйте позже.")
 
 
 async def handle_voice_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2410,11 +2509,13 @@ async def confirm_voice_task_callback(query, context: ContextTypes.DEFAULT_TYPE)
                 logger.warning(f"Пользователь не найден в Bitrix24: {responsible_name}")
         
         if not responsible_bitrix_ids:
-            # Если ответственные не найдены, используем создателя
-            responsible_bitrix_ids = [creator_bitrix_id]
-            warning_text = "⚠️ Ответственные не найдены. Задача будет назначена на вас."
-        else:
-            warning_text = ""
+            # Если ответственные не найдены, просим уточнить
+            await query.edit_message_text(
+                "❌ Ответственные не найдены в Bitrix24.\n\n"
+                "Пожалуйста, уточните ответственных текстом (например: \"Иван Петров, Мария Иванова\") "
+                "или используйте /create для ручного создания задачи."
+            )
+            return
         
         # Создаем задачу в Bitrix24
         task_result = bitrix_client.create_task(
@@ -2437,9 +2538,6 @@ async def confirm_voice_task_callback(query, context: ContextTypes.DEFAULT_TYPE)
                 f"📅 Дедлайн: {task_data.get('deadline', 'Не указан')}\n"
                 f"🎯 Приоритет: {task_data.get('priority', 'medium').title()}"
             )
-            
-            if warning_text:
-                response_text = f"{warning_text}\n\n{response_text}"
             
             await query.edit_message_text(response_text)
             
@@ -2504,8 +2602,13 @@ async def confirm_multiple_tasks_callback(query, context: ContextTypes.DEFAULT_T
                         logger.warning(f"Пользователь не найден в Bitrix24: {responsible_name}")
                 
                 if not responsible_bitrix_ids:
-                    # Если ответственные не найдены, используем создателя
-                    responsible_bitrix_ids = [creator_bitrix_id]
+                    # Если ответственные не найдены, добавляем в failed_tasks
+                    failed_tasks.append({
+                        'title': task.get('title'),
+                        'error': 'Ответственные не найдены в Bitrix24'
+                    })
+                    logger.error(f"❌ Задача {i}: ответственные не найдены")
+                    continue  # Пропускаем создание задачи
                 
                 # Создаем задачу в Bitrix24
                 task_result = bitrix_client.create_task(
@@ -2875,6 +2978,14 @@ def main():
         logger.info("✅ Обработчик множественных голосовых сообщений зарегистрирован (группа 1)")
     else:
         logger.warning("⚠️ Обработчик голосовых сообщений не зарегистрирован (требуются OPENAI_API_KEY и GEMINI_API_KEY)")
+    
+    # Обработчик для текстовых уточнений к голосовым сообщениям
+    if VOICE_PROCESSOR_AVAILABLE and voice_processor:
+        application.add_handler(MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            handle_voice_clarification
+        ), group=2)  # Группа 2 для обработки уточнений
+        logger.info("✅ Обработчик уточнений к голосовым сообщениям зарегистрирован (группа 2)")
     
     # Обработчик для reply-сообщений с упоминанием бота
     # Регистрируем ПЕРЕД ConversationHandler, чтобы он имел приоритет

@@ -813,7 +813,6 @@ class VoiceTaskProcessor:
             
             if not tasks_data:
                 return {
-                    'success': False,
                     'error': 'Не удалось извлечь задачи из текста',
                     'transcribed_text': transcribed_text
                 }
@@ -821,12 +820,8 @@ class VoiceTaskProcessor:
             # 4. Добавляем дополнительную информацию
             for task in tasks_data:
                 task['original_text'] = transcribed_text
-                # Если ответственные не указаны и есть создатель, назначаем на создателя
-                if not task.get('responsibles') and creator_info:
-                    creator_name = creator_info.get('NAME', '') + ' ' + creator_info.get('LAST_NAME', '')
-                    creator_name = creator_name.strip()
-                    if creator_name:
-                        task['responsibles'] = [creator_name]
+                # НЕ назначаем ответственных автоматически - будем уточнять в UI
+                # Это позволит пользователю выбрать ответственного вручную
             
             return {
                 'success': True,
