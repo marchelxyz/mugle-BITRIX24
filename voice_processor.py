@@ -214,7 +214,7 @@ class VoiceTaskProcessor:
             creator_info = None
             if telegram_user_id and self.bitrix_client:
                 try:
-                    logger.info(f"🔍 Поиск пользователя по Telegram ID: {telegram_user_id}")
+                    logger.info(f"🔍 Поиск пользователя по Telegram ID: {telegram_user_id} (тип: {type(telegram_user_id)})")
                     creator_info = self.bitrix_client.get_user_by_telegram_id(telegram_user_id)
                     if creator_info:
                         logger.info(f"👤 Найден создатель задачи: {creator_info.get('NAME', '')} {creator_info.get('LAST_NAME', '')} (ID: {creator_info.get('ID')})")
