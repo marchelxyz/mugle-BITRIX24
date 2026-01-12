@@ -28,7 +28,7 @@ class VoiceTaskProcessor:
         'gemini-pro'         # Приоритет 4 - legacy версия для совместимости
     ]
     
-    def __init__(self, openai_api_key: str, gemini_api_key: str):
+    def __init__(self, openai_api_key: str, gemini_api_key: str, bitrix_client=None):
         """Инициализация процессора голосовых сообщений"""
         # OpenAI для распознавания речи (Whisper)
         self.openai_client = OpenAI(api_key=openai_api_key)
@@ -37,6 +37,10 @@ class VoiceTaskProcessor:
         genai.configure(api_key=gemini_api_key)
         self.gemini_model = None
         self.gemini_model_name = None
+        
+        # Bitrix24 клиент для получения списка пользователей
+        self.bitrix_client = bitrix_client
+        
         self._initialize_gemini_model()
         
         logger.info("🎤 VoiceTaskProcessor инициализирован с OpenAI Whisper + Google Gemini")
@@ -242,6 +246,22 @@ class VoiceTaskProcessor:
             Словарь с данными задачи или None
         """
         try:
+            # Получаем список пользователей для точного определения ответственных
+            users_list = ""
+            if self.bitrix_client:
+                try:
+                    users = self.bitrix_client.get_all_users(active_only=True)
+                    if users:
+                        users_list = "\n\nСПИСОК СОТРУДНИКОВ БИТРИКС24:\n"
+                        for user in users[:50]:  # Ограничиваем первыми 50 для размера промпта
+                            name = user.get('NAME', '') + ' ' + user.get('LAST_NAME', '')
+                            name = name.strip()
+                            if name:
+                                users_list += f"- {name} (ID: {user['ID']})\n"
+                        users_list += "\nВАЖНО: Используй ТОЛЬКО имена из этого списка для поля responsibles."
+                except Exception as e:
+                    logger.warning(f"Не удалось получить список пользователей: {e}")
+            
             # Создаем промпт для Gemini
             current_datetime = datetime.now()
             current_date_str = current_datetime.strftime("%Y-%m-%d %H:%M:%S")
@@ -250,7 +270,7 @@ class VoiceTaskProcessor:
             prompt = f"""Ты — помощник для управления задачами в Битрикс24. Твоя задача — извлечь из текста пользователя детали задачи и вернуть их в формате JSON.
 
 Текущая дата и время: {current_date_str}
-Сегодня: {current_date_only}
+Сегодня: {current_date_only}{users_list}
 
 Текст пользователя: "{text}"
 
@@ -273,6 +293,7 @@ class VoiceTaskProcessor:
 6. Если приоритет не указан, используй "medium"
 7. Уровень уверенности (confidence) от 0.0 до 1.0 в зависимости от четкости запроса
 8. Всегда возвращай валидный JSON, без дополнительного текста или комментариев
+9. Для поля responsibles используй ТОЛЬКО имена из предоставленного списка сотрудников
 
 Примеры:
 - "Создать задачу подготовить отчет по продажам до пятницы" -> {{"title": "Подготовить отчет по продажам", "description": null, "responsibles": [], "deadline": "2025-01-17", "priority": "medium", "confidence": 0.7}}
