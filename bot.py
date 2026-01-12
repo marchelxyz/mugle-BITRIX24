@@ -2135,7 +2135,7 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
         processing_message = await update.message.reply_text("🎤 Обрабатываю голосовое сообщение...")
         
         # Обрабатываем голосовое сообщение
-        task_data = await voice_processor.process_voice_message(update.message.voice, context.bot)
+        task_data = await voice_processor.process_voice_message(update.message.voice, context.bot, update.message.from_user.id)
         
         if not task_data:
             await processing_message.edit_text("❌ Не удалось распознать задачу из голосового сообщения. Попробуйте еще раз.")
