@@ -28,23 +28,6 @@ from telegram.ext import (
     CallbackQueryHandler
 )
 from bitrix24_client import Bitrix24Client
-try:
-    import database
-    DATABASE_AVAILABLE = True
-except ImportError:
-    DATABASE_AVAILABLE = False
-    logger.warning("⚠️ Модуль database не найден. PostgreSQL функции будут недоступны.")
-try:
-    from task_notifications import TaskNotificationService
-    TASK_NOTIFICATIONS_AVAILABLE = True
-except ImportError:
-    TASK_NOTIFICATIONS_AVAILABLE = False
-    logger.warning("⚠️ Модуль task_notifications не найден. Уведомления о задачах будут недоступны.")
-try:
-    from aiohttp import web
-    AIOHTTP_AVAILABLE = True
-except ImportError:
-    AIOHTTP_AVAILABLE = False
 
 # Загрузка переменных окружения (только если файл .env существует)
 # В Railway переменные окружения настраиваются в интерфейсе
@@ -57,6 +40,35 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# Импорт модулей с проверкой доступности
+try:
+    import database
+    DATABASE_AVAILABLE = True
+except ImportError:
+    DATABASE_AVAILABLE = False
+    logger.warning("⚠️ Модуль database не найден. PostgreSQL функции будут недоступны.")
+
+try:
+    from voice_processor import VoiceTaskProcessor
+    VOICE_PROCESSOR_AVAILABLE = True
+    voice_processor = None
+except ImportError:
+    VOICE_PROCESSOR_AVAILABLE = False
+    logger.warning("⚠️ Модуль voice_processor не найден. Голосовые сообщения будут недоступны.")
+
+try:
+    from task_notifications import TaskNotificationService
+    TASK_NOTIFICATIONS_AVAILABLE = True
+except ImportError:
+    TASK_NOTIFICATIONS_AVAILABLE = False
+    logger.warning("⚠️ Модуль task_notifications не найден. Уведомления о задачах будут недоступны.")
+
+try:
+    from aiohttp import web
+    AIOHTTP_AVAILABLE = True
+except ImportError:
+    AIOHTTP_AVAILABLE = False
 
 # Инициализация клиента Битрикс24
 # Название поля для Telegram ID можно настроить через переменную окружения BITRIX24_TELEGRAM_FIELD_NAME
@@ -87,6 +99,32 @@ THREAD_TO_DEPARTMENT_MAPPING: Dict[int, int] = {}
 # Глобальная переменная для сервиса уведомлений о задачах
 # Используется в обработчике исходящего вебхука Bitrix24
 task_notification_service = None
+
+# Инициализация голосового процессора если доступен
+logger.info(f"🔍 Проверка голосового процессора: VOICE_PROCESSOR_AVAILABLE={VOICE_PROCESSOR_AVAILABLE}")
+if VOICE_PROCESSOR_AVAILABLE:
+    openai_api_key = os.getenv("OPENAI_API_KEY")
+    gemini_api_key = os.getenv("GEMINI_API_KEY")
+    
+    logger.info(f"🔍 Проверка API ключей: OPENAI_API_KEY={'установлен' if openai_api_key else 'отсутствует'}, GEMINI_API_KEY={'установлен' if gemini_api_key else 'отсутствует'}")
+    
+    if openai_api_key and gemini_api_key:
+        try:
+            voice_processor = VoiceTaskProcessor(openai_api_key, gemini_api_key)
+            logger.info("✅ Голосовой процессор инициализирован с OpenAI Whisper + Google Gemini")
+        except Exception as e:
+            logger.error(f"❌ Ошибка инициализации голосового процессора: {e}")
+            voice_processor = None
+    else:
+        missing_keys = []
+        if not openai_api_key:
+            missing_keys.append("OPENAI_API_KEY")
+        if not gemini_api_key:
+            missing_keys.append("GEMINI_API_KEY")
+        logger.warning(f"⚠️ Отсутствуют ключи: {', '.join(missing_keys)}. Голосовые сообщения будут недоступны.")
+        voice_processor = None
+else:
+    logger.warning("⚠️ Голосовой процессор недоступен (модуль не загружен)")
 
 
 def parse_telegram_group_id() -> tuple[Optional[int], Optional[int]]:
@@ -2082,6 +2120,156 @@ async def handle_reply_with_mention(update: Update, context: ContextTypes.DEFAUL
         logger.info(f"Сохранен ID сообщения 'Предложение создать задачу': {proposal_message.message_id}")
 
 
+async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Обработчик голосовых сообщений для создания задач
+    """
+    if not voice_processor:
+        await update.message.reply_text(
+            "⚠️ Обработка голосовых сообщений недоступна. Проверьте настройки OPENAI_API_KEY."
+        )
+        return
+    
+    try:
+        # Отправляем сообщение о начале обработки
+        processing_message = await update.message.reply_text("🎤 Обрабатываю голосовое сообщение...")
+        
+        # Обрабатываем голосовое сообщение
+        task_data = await voice_processor.process_voice_message(update.message.voice, context.bot)
+        
+        if not task_data:
+            await processing_message.edit_text("❌ Не удалось распознать задачу из голосового сообщения. Попробуйте еще раз.")
+            return
+        
+        # Проверяем уверенность распознавания
+        confidence = task_data.get('confidence', 0.0)
+        logger.info(f"Уверенность распознавания: {confidence:.2f}")
+        
+        # Показываем распознанный текст
+        original_text = task_data.get('original_text', '')
+        await processing_message.edit_text(
+            f"📝 Распознанный текст: \"{original_text}\"\n\n🤖 Анализирую запрос..."
+        )
+        
+        # Если уверенность низкая, задаем уточняющие вопросы
+        if confidence < 0.5:
+            questions = voice_processor.generate_clarification_questions(task_data)
+            
+            if questions:
+                response_text = "🤔 Нужны уточнения по задаче:\n\n"
+                response_text += "\n".join(f"• {q}" for q in questions)
+                response_text += "\n\nПожалуйста, отправьте уточнения текстом или используйте /create для ручного ввода."
+                
+                await processing_message.edit_text(response_text)
+                
+                # Сохраняем данные задачи для возможного использования после уточнений
+                context.user_data['pending_voice_task'] = task_data
+                return
+        
+        # Если уверенность хорошая, показываем распознанные данные
+        response_text = "✅ Задача распознана из голосового сообщения:\n\n"
+        response_text += f"📋 **Заголовок:** {task_data.get('title', 'Не определен')}\n"
+        
+        if task_data.get('responsibles'):
+            response_text += f"👥 **Ответственные:** {', '.join(task_data['responsibles'])}\n"
+        
+        if task_data.get('deadline'):
+            response_text += f"📅 **Дедлайн:** {task_data['deadline']}\n"
+        
+        if task_data.get('priority'):
+            priority_emoji = {'low': '🔵', 'medium': '🟡', 'high': '🔴'}.get(task_data['priority'], '⚪')
+            response_text += f"🎯 **Приоритет:** {priority_emoji} {task_data['priority'].title()}\n"
+        
+        if task_data.get('description'):
+            response_text += f"📝 **Описание:** {task_data['description']}\n"
+        
+        response_text += f"\n🎯 Уверенность распознавания: {confidence:.0%}\n\n"
+        response_text += "Создать задачу? Используйте /create для ручного ввода или /confirm_voice для подтверждения."
+        
+        await processing_message.edit_text(response_text, parse_mode='Markdown')
+        
+        # Сохраняем данные задачи для подтверждения
+        context.user_data['pending_voice_task'] = task_data
+        
+    except Exception as e:
+        logger.error(f"Ошибка обработки голосового сообщения: {e}", exc_info=True)
+        await update.message.reply_text("❌ Произошла ошибка при обработке голосового сообщения. Попробуйте позже.")
+
+
+async def confirm_voice_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Подтверждение создания задачи из голосового сообщения
+    """
+    task_data = context.user_data.get('pending_voice_task')
+    
+    if not task_data:
+        await update.message.reply_text("⚠️ Нет ожидающей задачи из голосового сообщения.")
+        return
+    
+    try:
+        # Получаем информацию о пользователе
+        telegram_user_id = update.effective_user.id
+        creator_bitrix_id = bitrix_client.get_user_by_telegram_id(telegram_user_id)
+        
+        if not creator_bitrix_id:
+            await update.message.reply_text(
+                "❌ Ваш Telegram ID не связан с аккаунтом Bitrix24. "
+                "Используйте команду /link для привязки."
+            )
+            return
+        
+        # Ищем ответственных в Bitrix24
+        responsible_bitrix_ids = []
+        for responsible_name in task_data.get('responsibles', []):
+            user_id = bitrix_client.find_user_by_name(responsible_name.strip())
+            if user_id:
+                responsible_bitrix_ids.append(user_id)
+            else:
+                logger.warning(f"Пользователь не найден в Bitrix24: {responsible_name}")
+        
+        if not responsible_bitrix_ids:
+            # Если ответственные не найдены, используем создателя
+            responsible_bitrix_ids = [creator_bitrix_id]
+            await update.message.reply_text(
+                f"⚠️ Ответственные не найдены. Задача будет назначена на вас."
+            )
+        
+        # Создаем задачу в Bitrix24
+        task_data_bitrix = {
+            'TITLE': task_data.get('title', 'Задача из голосового сообщения'),
+            'DESCRIPTION': task_data.get('description', ''),
+            'RESPONSIBLE_ID': responsible_bitrix_ids[0],  # Основной ответственный
+            'CREATED_BY': creator_bitrix_id,
+            'DEADLINE': task_data.get('deadline'),
+            'TAGS': 'голосовое_сообщение',
+            'PRIORITY': task_data.get('priority', 'medium')  # Добавляем приоритет
+        }
+        
+        task_result = bitrix_client.create_task(task_data_bitrix)
+        
+        if task_result and 'result' in task_result and 'task' in task_result['result']:
+            task_id = task_result['result']['task']['id']
+            await update.message.reply_text(
+                f"✅ Задача успешно создана!\n\n"
+                f"📋 ID задачи: {task_id}\n"
+                f"📝 Заголовок: {task_data.get('title')}\n"
+                f"👥 Ответственные: {', '.join(task_data.get('responsibles', []))}\n"
+                f"📅 Дедлайн: {task_data.get('deadline', 'Не указан')}\n"
+                f"🎯 Приоритет: {task_data.get('priority', 'medium').title()}"
+            )
+            
+            # Очищаем ожидающую задачу
+            del context.user_data['pending_voice_task']
+        else:
+            await update.message.reply_text(
+                "❌ Ошибка при создании задачи в Bitrix24. Попробуйте позже."
+            )
+            
+    except Exception as e:
+        logger.error(f"Ошибка подтверждения голосовой задачи: {e}", exc_info=True)
+        await update.message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
+
+
 class HealthCheckHandler(BaseHTTPRequestHandler):
     """Простой HTTP handler для health check"""
     def do_GET(self):
@@ -2278,6 +2466,20 @@ def main():
         filters.TEXT & filters.Regex(r'^/cancel(@\w+)?(\s|$)'),
         cancel
     ))
+    
+    # Обработчик для подтверждения голосовой задачи
+    application.add_handler(MessageHandler(
+        filters.TEXT & filters.Regex(r'^/confirm_voice(@\w+)?(\s|$)'),
+        confirm_voice_task
+    ))
+    
+    # Обработчик голосовых сообщений (если доступен)
+    logger.info(f"🔍 Проверка регистрации обработчика голоса: VOICE_PROCESSOR_AVAILABLE={VOICE_PROCESSOR_AVAILABLE}, voice_processor={'доступен' if voice_processor else 'недоступен'}")
+    if VOICE_PROCESSOR_AVAILABLE and voice_processor:
+        application.add_handler(MessageHandler(filters.VOICE, handle_voice_message))
+        logger.info("✅ Обработчик голосовых сообщений зарегистрирован")
+    else:
+        logger.warning("⚠️ Обработчик голосовых сообщений не зарегистрирован (требуются OPENAI_API_KEY и GEMINI_API_KEY)")
     
     # Обработчик для reply-сообщений с упоминанием бота
     # Регистрируем ПЕРЕД ConversationHandler, чтобы он имел приоритет
