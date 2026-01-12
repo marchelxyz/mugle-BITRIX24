@@ -255,6 +255,142 @@ class VoiceTaskProcessor:
             except Exception as e:
                 logger.warning(f"⚠️ Ошибка удаления файла {file_path}: {e}")
     
+    async def _parse_multiple_tasks_with_gemini(self, text: str, creator_info: Optional[Dict] = None) -> List[Dict[str, Any]]:
+        """
+        Парсит распознанный текст с использованием Google Gemini для извлечения нескольких задач
+        
+        Args:
+            text: Распознанный текст из голосового сообщения
+            
+        Returns:
+            Список словарей с данными задач
+        """
+        try:
+            # Получаем список пользователей для точного определения ответственных
+            users_list = ""
+            if self.bitrix_client:
+                try:
+                    users = self.bitrix_client.get_all_users(active_only=True)
+                    if users:
+                        users_list = "\n\nСПИСОК СОТРУДНИКОВ БИТРИКС24:\n"
+                        for user in users[:50]:  # Ограничиваем первыми 50 для размера промпта
+                            name = user.get('NAME', '') + ' ' + user.get('LAST_NAME', '')
+                            name = name.strip()
+                            if name:
+                                users_list += f"- {name} (ID: {user['ID']})\n"
+                        users_list += "\nВАЖНО: Используй ТОЛЬКО имена из этого списка для поля responsibles."
+                except Exception as e:
+                    logger.warning(f"Не удалось получить список пользователей: {e}")
+            
+            # Добавляем информацию о создателе задачи
+            creator_info_text = ""
+            if creator_info:
+                creator_name = creator_info.get('NAME', '') + ' ' + creator_info.get('LAST_NAME', '')
+                creator_name = creator_name.strip()
+                if creator_name:
+                    creator_info_text = f"\n\nПОЛЬЗОВАТЕЛЬ ОТПРАВИВШИЙ ГОЛОСОВОЕ СООБЩЕНИЕ: {creator_name} (ID: {creator_info.get('ID')})"
+                    creator_info_text += "\nУЧИТЫВАЙ: Этот пользователь является СОЗДАТЕЛЕМ задачи в Bitrix24. Если в тексте не указаны ответственные, назначь задачу на этого пользователя."
+            
+            # Создаем промпт для Gemini
+            current_datetime = datetime.now()
+            current_date_str = current_datetime.strftime("%Y-%m-%d %H:%M:%S")
+            current_date_only = current_datetime.strftime("%Y-%m-%d")
+            
+            prompt = f"""Ты — помощник для управления задачами в Битрикс24. Твоя задача — извлечь из текста пользователя детали ОДНОЙ ИЛИ НЕСКОЛЬКИХ задач и вернуть их в формате JSON массива.
+
+Текущая дата и время: {current_date_str}
+Сегодня: {current_date_only}{users_list}{creator_info_text}
+
+Текст пользователя: "{text}"
+
+Верни строго JSON массив со следующей структурой:
+[
+    {{
+        "title": "Название задачи 1",
+        "description": "Описание задачи 1 (опционально)",
+        "responsibles": ["Имя1", "Имя2"],
+        "deadline": "YYYY-MM-DD HH:MM",
+        "priority": "low|medium|high",
+        "confidence": 0.8
+    }},
+    {{
+        "title": "Название задачи 2",
+        "description": "Описание задачи 2 (опционально)",
+        "responsibles": ["Имя1"],
+        "deadline": "YYYY-MM-DD HH:MM",
+        "priority": "medium",
+        "confidence": 0.9
+    }}
+]
+
+Правила:
+1. Если пользователь говорит "сегодня", используй текущую дату ({current_date_only}) с временем 18:00 (МСК)
+2. Если пользователь говорит "завтра", "послезавтра", "через 3 дня" — вычисли правильную дату относительно текущей даты с временем 18:00 (МСК)
+3. Если указана относительная дата (например, "в пятницу"), вычисли дату относительно текущей недели с временем 18:00 (МСК)
+4. Если указано конкретное время (например, "до 13.00", "к 15:30"), используй указанное время
+5. Если время не указано, всегда устанавливай 18:00 (МСК)
+6. Если дедлайн не указан, оставь поле null
+7. Если ответственные не указаны, оставь массив пустым
+8. Если приоритет не указан, используй "medium"
+9. Уровень уверенности (confidence) от 0.0 до 1.0 в зависимости от четкости запроса
+10. Всегда возвращай валидный JSON массив, без дополнительного текста или комментариев
+11. Для поля responsibles используй ТОЛЬКО имена из предоставленного списка сотрудников
+12. Извлекай описание из полного контекста голосового сообщения
+13. Разделяй задачи по смыслу. Каждая отдельная задача должна быть отдельным элементом массива
+14. Если в тексте только одна задача, верни массив с одним элементом
+
+Примеры:
+- "Создать задачу подготовить отчет по продажам до пятницы" -> [{{"title": "Подготовить отчет по продажам", "description": "Создать задачу подготовить отчет по продажам", "responsibles": [], "deadline": "2025-01-17 18:00", "priority": "medium", "confidence": 0.7}}]
+- "Поручить Ивану провести анализ конкурентов, а Марии сделать презентацию до 15 марта" -> [{{"title": "Провести анализ конкурентов", "description": "Поручить Ивану провести анализ конкурентов", "responsibles": ["Иван"], "deadline": "2025-03-15 18:00", "priority": "medium", "confidence": 0.8}}, {{"title": "Сделать презентацию", "description": "Марии сделать презентацию", "responsibles": ["Мария"], "deadline": "2025-03-15 18:00", "priority": "medium", "confidence": 0.8}}]
+- "Сегодня срочно исправить ошибку на сайте и обновить документацию" -> [{{"title": "Исправить ошибку на сайте", "description": "Сегодня срочно исправить ошибку на сайте", "responsibles": [], "deadline": "{current_date_only} 18:00", "priority": "high", "confidence": 0.9}}, {{"title": "Обновить документацию", "description": "Обновить документацию", "responsibles": [], "deadline": "{current_date_only} 18:00", "priority": "medium", "confidence": 0.8}}]
+
+Верни только JSON массив:"""
+
+            # Убеждаемся, что модель инициализирована
+            self._ensure_gemini_model_initialized()
+            
+            # Отправляем запрос к Gemini с автоматическим fallback (синхронный API, оборачиваем в executor)
+            loop = asyncio.get_event_loop()
+            result_text = await loop.run_in_executor(
+                None,
+                lambda: self._try_gemini_models_with_fallback(prompt)
+            )
+            
+            # Убираем возможные markdown блоки кода
+            if result_text.startswith('```json'):
+                result_text = result_text[7:]
+            if result_text.endswith('```'):
+                result_text = result_text[:-3]
+            result_text = result_text.strip()
+            
+            # Парсим JSON
+            try:
+                tasks_data = json.loads(result_text)
+                
+                # Проверяем, что это массив
+                if not isinstance(tasks_data, list):
+                    logger.warning(f"Результат не является массивом, преобразуем в массив с одним элементом")
+                    tasks_data = [tasks_data]
+                
+                # Нормализуем и валидируем каждую задачу
+                processed_tasks = []
+                for task in tasks_data:
+                    processed_task = self._validate_and_format_task_data(task)
+                    if processed_task:
+                        processed_tasks.append(processed_task)
+                
+                logger.info(f"✅ Извлечено {len(processed_tasks)} задач из голосового сообщения")
+                return processed_tasks
+                
+            except json.JSONDecodeError as e:
+                logger.error(f"❌ Ошибка парсинга JSON из Gemini: {e}")
+                logger.error(f"🔍 Текст ответа: {result_text}")
+                return []
+                
+        except Exception as e:
+            logger.error(f"❌ Ошибка при извлечении задач: {e}")
+            return []
+
     async def _parse_task_text_with_gemini(self, text: str, creator_info: Optional[Dict] = None) -> Optional[Dict[str, Any]]:
         """
         Парсит распознанный текст с использованием Google Gemini для извлечения данных задачи
@@ -630,3 +766,80 @@ class VoiceTaskProcessor:
                 questions.append(f"Дедлайн: {task_data['deadline']}")
         
         return questions
+        
+    async def process_multiple_voice_tasks(self, voice_file: bytes, telegram_user_id: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Обрабатывает голосовое сообщение и извлекает несколько задач
+        
+        Args:
+            voice_file: Данные голосового файла
+            telegram_user_id: ID пользователя в Telegram
+            
+        Returns:
+            Словарь с результатом обработки
+        """
+        try:
+            # 1. Распознаем речь
+            transcribed_text = await self.transcribe_audio(voice_file)
+            if not transcribed_text:
+                return {
+                    'success': False,
+                    'error': 'Не удалось распознать речь',
+                    'transcribed_text': None
+                }
+            
+            logger.info(f"🎯 Распознанный текст: {transcribed_text}")
+            
+            # 2. Получаем информацию о создателе
+            creator_info = None
+            if telegram_user_id and self.bitrix_client:
+                try:
+                    logger.info(f"🔍 Поиск пользователя по Telegram ID: {telegram_user_id} (тип: {type(telegram_user_id)})")
+                    
+                    # Используем ту же логику, что и в мини-приложении
+                    from bot import get_bitrix_user_id_by_telegram_id
+                    creator_bitrix_id = get_bitrix_user_id_by_telegram_id(telegram_user_id)
+                    
+                    if creator_bitrix_id:
+                        creator_info = self.bitrix_client.get_user_by_id(creator_bitrix_id)
+                        logger.info(f"👤 Найден создатель задачи: {creator_info.get('NAME', '')} {creator_info.get('LAST_NAME', '')} (Bitrix ID: {creator_bitrix_id})")
+                    else:
+                        logger.warning(f"⚠️ Пользователь с Telegram ID {telegram_user_id} не найден в Bitrix24")
+                except Exception as e:
+                    logger.warning(f"Не удалось получить информацию о создателе: {e}")
+            
+            # 3. Извлекаем несколько задач с помощью Gemini
+            tasks_data = await self._parse_multiple_tasks_with_gemini(transcribed_text, creator_info)
+            
+            if not tasks_data:
+                return {
+                    'success': False,
+                    'error': 'Не удалось извлечь задачи из текста',
+                    'transcribed_text': transcribed_text
+                }
+            
+            # 4. Добавляем дополнительную информацию
+            for task in tasks_data:
+                task['original_text'] = transcribed_text
+                # Если ответственные не указаны и есть создатель, назначаем на создателя
+                if not task.get('responsibles') and creator_info:
+                    creator_name = creator_info.get('NAME', '') + ' ' + creator_info.get('LAST_NAME', '')
+                    creator_name = creator_name.strip()
+                    if creator_name:
+                        task['responsibles'] = [creator_name]
+            
+            return {
+                'success': True,
+                'tasks': tasks_data,
+                'transcribed_text': transcribed_text,
+                'creator_info': creator_info,
+                'tasks_count': len(tasks_data)
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при обработке голосового сообщения: {e}", exc_info=True)
+            return {
+                'success': False,
+                'error': f'Ошибка обработки: {str(e)}',
+                'transcribed_text': None
+            }
