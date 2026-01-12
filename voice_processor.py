@@ -1159,3 +1159,119 @@ class VoiceTaskProcessor:
                 'error': f'Ошибка обработки: {str(e)}',
                 'transcribed_text': None
             }
+    
+    async def process_multiple_tasks_from_text(self, transcribed_text: str, telegram_user_id: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Обрабатывает уже транскрибированный текст для извлечения нескольких задач
+        (без повторного распознавания голоса)
+        
+        Args:
+            transcribed_text: Уже распознанный текст
+            telegram_user_id: ID пользователя в Telegram
+            
+        Returns:
+            Словарь с результатом обработки
+        """
+        try:
+            if not transcribed_text:
+                return {
+                    'success': False,
+                    'error': 'Не удалось распознать речь',
+                    'transcribed_text': None
+                }
+            
+            # Получаем информацию о создателе
+            creator_info = None
+            if telegram_user_id and self.bitrix_client:
+                try:
+                    logger.info(f"🔍 Поиск пользователя по Telegram ID: {telegram_user_id} (тип: {type(telegram_user_id)})")
+                    
+                    # Используем ту же логику, что и в мини-приложении
+                    from bot import get_bitrix_user_id_by_telegram_id
+                    creator_bitrix_id = get_bitrix_user_id_by_telegram_id(telegram_user_id)
+                    
+                    if creator_bitrix_id:
+                        creator_info = self.bitrix_client.get_user_by_id(creator_bitrix_id)
+                        logger.info(f"👤 Найден создатель задачи: {creator_info.get('NAME', '')} {creator_info.get('LAST_NAME', '')} (Bitrix ID: {creator_bitrix_id})")
+                    else:
+                        logger.warning(f"⚠️ Пользователь с Telegram ID {telegram_user_id} не найден в Bitrix24")
+                except Exception as e:
+                    logger.warning(f"Не удалось получить информацию о создателе: {e}")
+            
+            # Извлекаем несколько задач с помощью Gemini
+            tasks_data = await self._parse_multiple_tasks_with_gemini(transcribed_text, creator_info)
+            
+            if not tasks_data:
+                return {
+                    'success': False,
+                    'error': 'Не удалось извлечь задачи из текста',
+                    'transcribed_text': transcribed_text
+                }
+            
+            # Добавляем дополнительную информацию
+            for task in tasks_data:
+                task['original_text'] = transcribed_text
+            
+            return {
+                'success': True,
+                'tasks': tasks_data,
+                'transcribed_text': transcribed_text,
+                'creator_info': creator_info,
+                'tasks_count': len(tasks_data)
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при извлечении задач из текста: {e}", exc_info=True)
+            return {
+                'success': False,
+                'error': f'Ошибка обработки: {str(e)}',
+                'transcribed_text': transcribed_text
+            }
+    
+    async def process_single_task_from_text(self, transcribed_text: str, telegram_user_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+        """
+        Обрабатывает уже транскрибированный текст для извлечения одной задачи
+        (без повторного распознавания голоса)
+        
+        Args:
+            transcribed_text: Уже распознанный текст
+            telegram_user_id: ID пользователя в Telegram
+            
+        Returns:
+            Словарь с данными задачи или None в случае ошибки
+        """
+        try:
+            if not transcribed_text:
+                return None
+            
+            # Получаем информацию о создателе задачи
+            creator_info = None
+            if telegram_user_id and self.bitrix_client:
+                try:
+                    logger.info(f"🔍 Поиск пользователя по Telegram ID: {telegram_user_id} (тип: {type(telegram_user_id)})")
+                    
+                    from bot import get_bitrix_user_id_by_telegram_id
+                    creator_bitrix_id = get_bitrix_user_id_by_telegram_id(telegram_user_id)
+                    
+                    if creator_bitrix_id:
+                        creator_info = self.bitrix_client.get_user_by_id(creator_bitrix_id)
+                        logger.info(f"👤 Найден создатель задачи: {creator_info.get('NAME', '')} {creator_info.get('LAST_NAME', '')} (Bitrix ID: {creator_bitrix_id})")
+                    else:
+                        logger.warning(f"⚠️ Пользователь с Telegram ID {telegram_user_id} не найден в Bitrix24")
+                except Exception as e:
+                    logger.warning(f"Не удалось получить информацию о создателе: {e}")
+            
+            # Парсим распознанный текст для извлечения данных задачи
+            task_data = await self._parse_task_text_with_gemini(transcribed_text, creator_info)
+            
+            if task_data:
+                task_data['original_text'] = transcribed_text
+                logger.info(f"✅ Данные задачи извлечены: {task_data}")
+                return task_data
+            else:
+                logger.warning("⚠️ Не удалось извлечь данные задачи из текста")
+                return None
+                
+        except Exception as e:
+            logger.error(f"❌ Ошибка обработки текста: {e}", exc_info=True)
+            return None
