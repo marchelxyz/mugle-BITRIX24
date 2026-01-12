@@ -110,7 +110,7 @@ if VOICE_PROCESSOR_AVAILABLE:
     
     if openai_api_key and gemini_api_key:
         try:
-            voice_processor = VoiceTaskProcessor(openai_api_key, gemini_api_key)
+            voice_processor = VoiceTaskProcessor(openai_api_key, gemini_api_key, bitrix_client)
             logger.info("✅ Голосовой процессор инициализирован с OpenAI Whisper + Google Gemini")
         except Exception as e:
             logger.error(f"❌ Ошибка инициализации голосового процессора: {e}")
@@ -2168,20 +2168,20 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
         
         # Если уверенность хорошая, показываем распознанные данные
         response_text = "✅ Задача распознана из голосового сообщения:\n\n"
-        response_text += f"📋 **Заголовок:** {task_data.get('title', 'Не определен')}\n"
+        response_text += f"📋 Заголовок: {task_data.get('title', 'Не определен')}\n"
         
         if task_data.get('responsibles'):
-            response_text += f"👥 **Ответственные:** {', '.join(task_data['responsibles'])}\n"
+            response_text += f"👥 Ответственные: {', '.join(task_data['responsibles'])}\n"
         
         if task_data.get('deadline'):
-            response_text += f"📅 **Дедлайн:** {task_data['deadline']}\n"
+            response_text += f"📅 Дедлайн: {task_data['deadline']}\n"
         
         if task_data.get('priority'):
             priority_emoji = {'low': '🔵', 'medium': '🟡', 'high': '🔴'}.get(task_data['priority'], '⚪')
-            response_text += f"🎯 **Приоритет:** {priority_emoji} {task_data['priority'].title()}\n"
+            response_text += f"🎯 Приоритет: {priority_emoji} {task_data['priority'].title()}\n"
         
         if task_data.get('description'):
-            response_text += f"📝 **Описание:** {task_data['description']}\n"
+            response_text += f"📝 Описание: {task_data['description']}\n"
         
         response_text += f"\n🎯 Уверенность распознавания: {confidence:.0%}\n\n"
         response_text += "Создать эту задачу?"
