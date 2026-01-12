@@ -2186,7 +2186,7 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
         response_text += f"\n🎯 Уверенность распознавания: {confidence:.0%}\n\n"
         response_text += "Создать задачу? Используйте /create для ручного ввода или /confirm_voice для подтверждения."
         
-        await processing_message.edit_text(response_text, parse_mode='Markdown')
+        await processing_message.edit_text(response_text)
         
         # Сохраняем данные задачи для подтверждения
         context.user_data['pending_voice_task'] = task_data
