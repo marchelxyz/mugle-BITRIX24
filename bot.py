@@ -28,32 +28,6 @@ from telegram.ext import (
     CallbackQueryHandler
 )
 from bitrix24_client import Bitrix24Client
-try:
-    import database
-    DATABASE_AVAILABLE = True
-except ImportError:
-    DATABASE_AVAILABLE = False
-    logger.warning("⚠️ Модуль database не найден. PostgreSQL функции будут недоступны.")
-try:
-    from task_notifications import TaskNotificationService
-    TASK_NOTIFICATIONS_AVAILABLE = True
-except ImportError:
-    TASK_NOTIFICATIONS_AVAILABLE = False
-    logger.warning("⚠️ Модуль task_notifications не найден. Уведомления о задачах будут недоступны.")
-try:
-    from aiohttp import web
-    AIOHTTP_AVAILABLE = True
-except ImportError:
-    AIOHTTP_AVAILABLE = False
-
-# Импорт модуля для обработки голосовых сообщений
-try:
-    from voice_processor import VoiceTaskProcessor
-    VOICE_PROCESSOR_AVAILABLE = True
-    voice_processor = None
-except ImportError:
-    VOICE_PROCESSOR_AVAILABLE = False
-    logger.warning("⚠️ Модуль voice_processor не найден. Голосовые сообщения будут недоступны.")
 
 # Загрузка переменных окружения (только если файл .env существует)
 # В Railway переменные окружения настраиваются в интерфейсе
@@ -66,6 +40,35 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# Импорт модулей с проверкой доступности
+try:
+    import database
+    DATABASE_AVAILABLE = True
+except ImportError:
+    DATABASE_AVAILABLE = False
+    logger.warning("⚠️ Модуль database не найден. PostgreSQL функции будут недоступны.")
+
+try:
+    from voice_processor import VoiceTaskProcessor
+    VOICE_PROCESSOR_AVAILABLE = True
+    voice_processor = None
+except ImportError:
+    VOICE_PROCESSOR_AVAILABLE = False
+    logger.warning("⚠️ Модуль voice_processor не найден. Голосовые сообщения будут недоступны.")
+
+try:
+    from task_notifications import TaskNotificationService
+    TASK_NOTIFICATIONS_AVAILABLE = True
+except ImportError:
+    TASK_NOTIFICATIONS_AVAILABLE = False
+    logger.warning("⚠️ Модуль task_notifications не найден. Уведомления о задачах будут недоступны.")
+
+try:
+    from aiohttp import web
+    AIOHTTP_AVAILABLE = True
+except ImportError:
+    AIOHTTP_AVAILABLE = False
 
 # Инициализация клиента Битрикс24
 # Название поля для Telegram ID можно настроить через переменную окружения BITRIX24_TELEGRAM_FIELD_NAME
@@ -98,9 +101,12 @@ THREAD_TO_DEPARTMENT_MAPPING: Dict[int, int] = {}
 task_notification_service = None
 
 # Инициализация голосового процессора если доступен
+logger.info(f"🔍 Проверка голосового процессора: VOICE_PROCESSOR_AVAILABLE={VOICE_PROCESSOR_AVAILABLE}")
 if VOICE_PROCESSOR_AVAILABLE:
     openai_api_key = os.getenv("OPENAI_API_KEY")
     gemini_api_key = os.getenv("GEMINI_API_KEY")
+    
+    logger.info(f"🔍 Проверка API ключей: OPENAI_API_KEY={'установлен' if openai_api_key else 'отсутствует'}, GEMINI_API_KEY={'установлен' if gemini_api_key else 'отсутствует'}")
     
     if openai_api_key and gemini_api_key:
         try:
@@ -117,6 +123,8 @@ if VOICE_PROCESSOR_AVAILABLE:
             missing_keys.append("GEMINI_API_KEY")
         logger.warning(f"⚠️ Отсутствуют ключи: {', '.join(missing_keys)}. Голосовые сообщения будут недоступны.")
         voice_processor = None
+else:
+    logger.warning("⚠️ Голосовой процессор недоступен (модуль не загружен)")
 
 
 def parse_telegram_group_id() -> tuple[Optional[int], Optional[int]]:
@@ -2466,11 +2474,12 @@ def main():
     ))
     
     # Обработчик голосовых сообщений (если доступен)
+    logger.info(f"🔍 Проверка регистрации обработчика голоса: VOICE_PROCESSOR_AVAILABLE={VOICE_PROCESSOR_AVAILABLE}, voice_processor={'доступен' if voice_processor else 'недоступен'}")
     if VOICE_PROCESSOR_AVAILABLE and voice_processor:
         application.add_handler(MessageHandler(filters.VOICE, handle_voice_message))
         logger.info("✅ Обработчик голосовых сообщений зарегистрирован")
     else:
-        logger.warning("⚠️ Обработчик голосовых сообщений не зарегистрирован (требуется OPENAI_API_KEY)")
+        logger.warning("⚠️ Обработчик голосовых сообщений не зарегистрирован (требуются OPENAI_API_KEY и GEMINI_API_KEY)")
     
     # Обработчик для reply-сообщений с упоминанием бота
     # Регистрируем ПЕРЕД ConversationHandler, чтобы он имел приоритет
