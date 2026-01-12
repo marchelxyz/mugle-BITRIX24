@@ -2248,8 +2248,12 @@ async def handle_voice_message_smart(update: Update, context: ContextTypes.DEFAU
             await voice_file.download_to_drive(temp_file.name)
             temp_oga_path = temp_file.name
         
+        # Читаем файл как байты и передаем в метод
+        with open(temp_oga_path, 'rb') as f:
+            voice_bytes = f.read()
+        
         # Получаем распознанный текст
-        transcribed_text = await voice_processor._transcribe_audio(open(temp_oga_path, 'rb').read())
+        transcribed_text = await voice_processor._transcribe_audio(voice_bytes)
         
         # Очищаем временные файлы
         voice_processor._cleanup_files([temp_oga_path])

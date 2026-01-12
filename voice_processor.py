@@ -252,9 +252,61 @@ class VoiceTaskProcessor:
             try:
                 if os.path.exists(file_path):
                     os.unlink(file_path)
-                    logger.debug(f"🗑️ Удален временный файл: {file_path}")
             except Exception as e:
-                logger.warning(f"⚠️ Ошибка удаления файла {file_path}: {e}")
+                logger.warning(f"Не удалось удалить файл {file_path}: {e}")
+    
+    async def _transcribe_audio(self, voice_file: bytes) -> Optional[str]:
+        """
+        Распознает речь из байтов голосового файла
+        
+        Args:
+            voice_file: Байты голосового файла
+            
+        Returns:
+            Распознанный текст или None
+        """
+        try:
+            # Создаем временный файл
+            with tempfile.NamedTemporaryFile(suffix='.oga', delete=False) as temp_file:
+                temp_file.write(voice_file)
+                temp_oga_path = temp_file.name
+            
+            # Конвертируем в MP3 для Whisper
+            temp_mp3_path = temp_oga_path.replace('.oga', '.mp3')
+            try:
+                audio = AudioSegment.from_file(temp_oga_path, format='ogg')
+                audio.export(temp_mp3_path, format='mp3')
+                logger.info(f"🔄 Аудио конвертировано в MP3: {temp_mp3_path}")
+            except Exception as e:
+                logger.error(f"❌ Ошибка конвертации аудио: {e}")
+                self._cleanup_files([temp_oga_path, temp_mp3_path])
+                return None
+            
+            # Распознаем речь через Whisper
+            try:
+                with open(temp_mp3_path, 'rb') as audio_file:
+                    transcript = self.openai_client.audio.transcriptions.create(
+                        model="whisper-1",
+                        file=audio_file,
+                        language='ru'  # Указываем русский язык
+                    )
+                
+                recognized_text = transcript.text.strip()
+                logger.info(f"🎯 Распознанный текст: {recognized_text}")
+                
+                # Очищаем временные файлы
+                self._cleanup_files([temp_oga_path, temp_mp3_path])
+                
+                return recognized_text
+                
+            except Exception as e:
+                logger.error(f"❌ Ошибка распознавания речи: {e}")
+                self._cleanup_files([temp_oga_path, temp_mp3_path])
+                return None
+                
+        except Exception as e:
+            logger.error(f"❌ Ошибка обработки аудио файла: {e}")
+            return None
     
     async def _parse_multiple_tasks_with_gemini(self, text: str, creator_info: Optional[Dict] = None) -> List[Dict[str, Any]]:
         """
