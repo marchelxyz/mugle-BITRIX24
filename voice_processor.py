@@ -391,12 +391,72 @@ class VoiceTaskProcessor:
             logger.error(f"❌ Ошибка при извлечении задач: {e}")
             return []
 
+
+    def _validate_and_format_task_data(self, task_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Валидирует и форматирует данные задачи
+        
+        Args:
+            task_data: Сырые данные задачи из Gemini
+            
+        Returns:
+            Отформатированные данные задачи или None
+        """
+        try:
+            # Базовая валидация
+            if not isinstance(task_data, dict):
+                return None
+            
+            # Валидация и форматирование полей
+            processed_task = {
+                'title': task_data.get('title', 'Задача из голосового сообщения'),
+                'description': task_data.get('description'),
+                'responsibles': task_data.get('responsibles', []),
+                'deadline': task_data.get('deadline'),
+                'priority': task_data.get('priority', 'medium'),
+                'confidence': task_data.get('confidence', 0.5)
+            }
+            
+            # Форматируем дедлайн
+            if processed_task['deadline']:
+                processed_task['deadline'] = self._validate_and_format_date(processed_task['deadline'])
+            
+            # Форматируем описание в деловой стиль
+            if processed_task.get('description'):
+                processed_task['description'] = self._format_description_business_style(
+                    processed_task['description'], 
+                    processed_task['title']
+                )
+            
+            # Убедимся, что responsibles это список
+            if isinstance(processed_task['responsibles'], str):
+                processed_task['responsibles'] = [processed_task['responsibles']]
+            
+            # Валидация приоритета
+            if processed_task['priority'] not in ['low', 'medium', 'high']:
+                processed_task['priority'] = 'medium'
+            
+            # Валидация уверенности
+            try:
+                confidence = float(processed_task['confidence'])
+                processed_task['confidence'] = max(0.0, min(1.0, confidence))
+            except (ValueError, TypeError):
+                processed_task['confidence'] = 0.5
+            
+            return processed_task
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка валидации данных задачи: {e}")
+            return None
+
+
     async def _parse_task_text_with_gemini(self, text: str, creator_info: Optional[Dict] = None) -> Optional[Dict[str, Any]]:
         """
         Парсит распознанный текст с использованием Google Gemini для извлечения данных задачи
         
         Args:
             text: Распознанный текст из голосового сообщения
+            creator_info: Информация о создателе задачи
             
         Returns:
             Словарь с данными задачи или None
@@ -507,6 +567,13 @@ class VoiceTaskProcessor:
             if processed_result['deadline']:
                 processed_result['deadline'] = self._validate_and_format_date(processed_result['deadline'])
             
+            # Форматируем описание в деловой стиль
+            if processed_result.get('description'):
+                processed_result['description'] = self._format_description_business_style(
+                    processed_result['description'], 
+                    processed_result['title']
+                )
+            
             # Убедимся, что responsibles это список
             if isinstance(processed_result['responsibles'], str):
                 processed_result['responsibles'] = [processed_result['responsibles']]
@@ -556,6 +623,10 @@ class VoiceTaskProcessor:
             
             # Извлекаем описание
             description = self._extract_description(text)
+            
+            # Форматируем описание в деловой стиль
+            if description:
+                description = self._format_description_business_style(description, title)
             
             # Собираем результат
             result = {
@@ -707,6 +778,107 @@ class VoiceTaskProcessor:
         description = description.strip('.,!?')
         
         return description[:500]  # Ограничиваем длину описания
+    
+    def _format_description_business_style(self, description: str, title: str) -> str:
+        """
+        Форматирует описание задачи в деловой стиль
+        
+        Args:
+            description: Исходное описание из транскрибации
+            title: Заголовок задачи для контекста
+            
+        Returns:
+            Отформатированное описание в деловом стиле
+        """
+        if not description or len(description.strip()) < 5:
+            return ""
+        
+        try:
+            # Используем Gemini для форматирования описания
+            import google.generativeai as genai
+            
+            genai.configure(api_key=self.gemini_api_key)
+            model = genai.GenerativeModel('gemini-2.0-flash-exp')
+            
+            prompt = f"""
+Преобразуй текст в деловое описание задачи.
+
+ЗАДАЧА: {title}
+
+ИСХОДНЫЙ ТЕКСТ (из голосового сообщения):
+"{description}"
+
+ИНСТРУКЦИИ:
+1. Перефразируй текст в формальном деловом стиле
+2. Убери разговорные выражения, слова-паразиты, эмоции
+3. Добавь структуру и ясность
+4. Используй профессиональную лексику
+5. Сохраняй основной смысл и детали
+6. Если нужно, добавь конкретики для ясности
+7. Результат должен быть кратким и по делу (до 300 символов)
+
+ПРИМЕРЫ:
+ИСХОДНЫЙ: "надо быстренько сделать отчет по продажам, типа за квартал"
+РЕЗУЛЬТАТ: "Подготовить квартальный отчет по продажам с анализом показателей"
+
+ИСХОДНЫЙ: "созвониться с клиентами и узнать все по проекту"
+РЕЗУЛЬТАТ: "Провести переговоры с клиентами для уточнения деталей проекта"
+
+ИСХОДНЫЙ: "починить что-то на сайте, там все сломалось"
+РЕЗУЛЬТАТ: "Выявить и устранить технические неисправности на сайте"
+
+ОТВЕТ (только отформатированное описание):
+"""
+            
+            response = model.generate_content(prompt)
+            formatted_description = response.text.strip()
+            
+            # Дополнительная очистка
+            formatted_description = re.sub(r'["\']', '', formatted_description)
+            formatted_description = re.sub(r'\s+', ' ', formatted_description).strip()
+            
+            # Ограничиваем длину
+            if len(formatted_description) > 300:
+                formatted_description = formatted_description[:297] + "..."
+            
+            logger.info(f"📝 Описание отформатировано: '{description[:50]}...' -> '{formatted_description[:50]}...'")
+            return formatted_description
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Не удалось отформатировать описание: {e}")
+            # В случае ошибки возвращаем очищенное исходное описание
+            return self._clean_description_basic(description)
+    
+    def _clean_description_basic(self, description: str) -> str:
+        """
+        Базовая очистка описания без использования AI
+        
+        Args:
+            description: Исходное описание
+            
+        Returns:
+            Очищенное описание
+        """
+        # Убираем разговорные выражения
+        casual_words = [
+            'короче', 'в общем', 'типа', 'как бы', 'вот', 'это самое',
+            'ну', 'блин', 'честно говоря', 'по сути', 'на самом деле',
+            'так сказать', 'знаешь', 'понимаешь', 'вроде', 'примерно'
+        ]
+        
+        cleaned = description
+        for word in casual_words:
+            cleaned = re.sub(rf'\b{re.escape(word)}\b', '', cleaned, flags=re.IGNORECASE)
+        
+        # Убираем лишние пробелы и знаки
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        cleaned = cleaned.strip('.,!?')
+        
+        # Делаем первую букву заглавной
+        if cleaned and len(cleaned) > 0:
+            cleaned = cleaned[0].upper() + cleaned[1:]
+        
+        return cleaned[:300]
     
     def _calculate_confidence(self, responsibles: list, deadline: Optional[str], title: str) -> float:
         """
