@@ -2227,6 +2227,73 @@ async def handle_multiple_voice_message(update: Update, context: ContextTypes.DE
             await processing_message.edit_text("❌ Произошла ошибка при обработке голосового сообщения. Попробуйте еще раз.")
 
 
+async def handle_voice_message_smart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Умный обработчик голосовых сообщений - автоматически определяет режим
+    """
+    if not VOICE_PROCESSOR_AVAILABLE or not voice_processor:
+        await update.message.reply_text("❌ Функция голосовых сообщений недоступна. Требуются OPENAI_API_KEY и GEMINI_API_KEY.")
+        return
+    
+    try:
+        # Показываем сообщение о начале обработки
+        processing_message = await update.message.reply_text("🎤 Обрабатываю голосовое сообщение...")
+        
+        # Скачиваем голосовое сообщение
+        voice_file = await context.bot.get_file(update.message.voice.file_id)
+        
+        # Создаем временный файл
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix='.oga', delete=False) as temp_file:
+            await voice_file.download_to_drive(temp_file.name)
+            temp_oga_path = temp_file.name
+        
+        # Получаем распознанный текст
+        transcribed_text = await voice_processor._transcribe_audio(open(temp_oga_path, 'rb').read())
+        
+        # Очищаем временные файлы
+        voice_processor._cleanup_files([temp_oga_path])
+        
+        if not transcribed_text:
+            await processing_message.edit_text("❌ Не удалось распознать речь.")
+            return
+        
+        logger.info(f"🎯 Распознанный текст: {transcribed_text}")
+        
+        # Анализируем текст для определения режима
+        text_lower = transcribed_text.lower()
+        
+        # Ключевые слова, указывающие на несколько задач
+        multiple_tasks_keywords = [
+            'две', 'три', 'четыре', 'пять', 'несколько', 'много',
+            'первая задача', 'вторая задача', 'третья задача',
+            'также', 'еще', 'кроме того', 'дополнительно',
+            'разные задачи', 'раздельные задачи', 'несколько задач',
+            'задачи', 'задачу', 'задачи по'
+        ]
+        
+        # Проверяем, есть ли ключевые слова для нескольких задач
+        is_multiple_tasks = any(keyword in text_lower for keyword in multiple_tasks_keywords)
+        
+        # Также проверяем наличие нескольких глаголов или разделителей
+        task_verbs = ['сделать', 'подготовить', 'создать', 'выполнить', 'поставить', 'организовать']
+        task_count = sum(1 for verb in task_verbs if verb in text_lower)
+        
+        # Если есть ключевые слова или несколько глаголов, используем режим множественных задач
+        if is_multiple_tasks or task_count >= 2:
+            logger.info("🔍 Определен режим множественных задач")
+            await processing_message.edit_text("🎯 Обнаружено несколько задач, обрабатываю...")
+            await handle_multiple_voice_message(update, context)
+        else:
+            logger.info("🔍 Определен режим одной задачи")
+            await processing_message.edit_text("🎯 Обнаружена одна задача, обрабатываю...")
+            await handle_voice_message(update, context)
+        
+    except Exception as e:
+        logger.error(f"Ошибка в умном обработчике голосовых сообщений: {e}", exc_info=True)
+        await update.message.reply_text("❌ Произошла ошибка при обработке голосового сообщения. Попробуйте позже.")
+
+
 async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик голосовых сообщений для создания одной задачи"""
     if not voice_processor:
@@ -2969,8 +3036,8 @@ def main():
     # Обработчик голосовых сообщений (если доступен)
     logger.info(f"🔍 Проверка регистрации обработчика голоса: VOICE_PROCESSOR_AVAILABLE={VOICE_PROCESSOR_AVAILABLE}, voice_processor={'доступен' if voice_processor else 'недоступен'}")
     if VOICE_PROCESSOR_AVAILABLE and voice_processor:
-        application.add_handler(MessageHandler(filters.VOICE, handle_voice_message))
-        logger.info("✅ Обработчик голосовых сообщений зарегистрирован")
+        application.add_handler(MessageHandler(filters.VOICE, handle_voice_message_smart))
+        logger.info("✅ Умный обработчик голосовых сообщений зарегистрирован")
         
         # Также регистрируем обработчик для нескольких задач по умолчанию
         # Можно переключить режим через команду /switch_voice_mode

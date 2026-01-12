@@ -34,6 +34,7 @@ class VoiceTaskProcessor:
         self.openai_client = OpenAI(api_key=openai_api_key)
         
         # Google Gemini для обработки текста
+        self.gemini_api_key = gemini_api_key
         genai.configure(api_key=gemini_api_key)
         self.gemini_model = None
         self.gemini_model_name = None
@@ -553,6 +554,15 @@ class VoiceTaskProcessor:
             # Парсим JSON
             result = json.loads(result_text)
             
+            # Проверяем, что это не список (случай когда вернулись несколько задач)
+            if isinstance(result, list):
+                logger.warning(f"Получен список задач вместо одной задачи, берем первую")
+                if len(result) > 0:
+                    result = result[0]
+                else:
+                    logger.error("Пустой список задач")
+                    return self._parse_task_text_fallback(text, creator_info)
+            
             # Валидация и обработка результата
             processed_result = {
                 'title': result.get('title', 'Задача из голосового сообщения'),
@@ -952,7 +962,7 @@ class VoiceTaskProcessor:
         """
         try:
             # 1. Распознаем речь
-            transcribed_text = await self.transcribe_audio(voice_file)
+            transcribed_text = await self._transcribe_audio(voice_file)
             if not transcribed_text:
                 return {
                     'success': False,
