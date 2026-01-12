@@ -1,9 +1,13 @@
 """
 Модуль для обработки голосовых сообщений и распознавания речи через OpenAI Whisper + Google Gemini
+
+ПРИМЕЧАНИЕ: Библиотека google.generativeai устарела и будет заменена на google-genai в будущем.
+Текущая реализация продолжает работать, но при обновлении следует мигрировать на новый API.
 """
 import os
 import tempfile
 import logging
+import warnings
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
 from telegram import Voice
@@ -13,6 +17,9 @@ import re
 import json
 import asyncio
 from dateutil import parser
+
+# Подавляем FutureWarning от google.generativeai (планируется миграция на google-genai)
+warnings.filterwarnings('ignore', category=FutureWarning, module='google.generativeai')
 import google.generativeai as genai
 
 logger = logging.getLogger(__name__)
@@ -21,10 +28,11 @@ class VoiceTaskProcessor:
     """Класс для обработки голосовых сообщений и извлечения данных задачи"""
     
     # Приоритеты моделей Gemini с автоматическим fallback
+    # Используем стабильные модели с хорошими лимитами на бесплатном уровне
     MODEL_PRIORITIES = [
-        'gemini-2.5-flash',  # Приоритет 1 - самая новая и быстрая
-        'gemini-1.5-flash',  # Приоритет 2 - быстрая и широко доступная
-        'gemini-1.5-pro',    # Приоритет 3 - более мощная модель
+        'gemini-1.5-flash',  # Приоритет 1 - быстрая и стабильная, хорошие лимиты
+        'gemini-1.5-pro',    # Приоритет 2 - более мощная модель
+        'gemini-2.0-flash',  # Приоритет 3 - новая версия (может иметь ограничения)
         'gemini-pro'         # Приоритет 4 - legacy версия для совместимости
     ]
     
@@ -97,16 +105,19 @@ class VoiceTaskProcessor:
         
         raise RuntimeError("Не удалось инициализировать ни одну из доступных моделей Gemini")
     
-    def _try_gemini_models_with_fallback(self, prompt: str) -> str:
+    def _try_gemini_models_with_fallback(self, prompt: str, max_retries: int = 2) -> str:
         """
         Выполняет запрос к модели с автоматическим fallback на следующую модель при ошибке
         
         Args:
             prompt: Промпт для отправки в модель
+            max_retries: Максимальное количество повторных попыток при rate limit
             
         Returns:
             Текст ответа от модели
         """
+        import time
+        
         # Список моделей для попытки (начинаем с текущей, затем пробуем остальные)
         models_to_try = []
         if self.gemini_model_name:
@@ -119,36 +130,57 @@ class VoiceTaskProcessor:
         
         last_error = None
         for model_name in models_to_try:
-            try:
-                # Если это не текущая модель, создаем новую
-                if model_name != self.gemini_model_name:
-                    logger.info(f"Попытка использовать модель: {model_name}")
-                    model = genai.GenerativeModel(
-                        model_name,
-                        generation_config={
-                            "response_mime_type": "application/json",
-                            "temperature": 0.3
-                        }
-                    )
-                else:
-                    model = self.gemini_model
-                
-                # Выполняем запрос
-                response = model.generate_content(prompt)
-                result_text = response.text.strip()
-                
-                # Если успешно и использовали другую модель, обновляем текущую
-                if model_name != self.gemini_model_name:
-                    self.gemini_model = model
-                    self.gemini_model_name = model_name
-                    logger.info(f"Успешно переключились на модель: {model_name}")
-                
-                return result_text
-                
-            except Exception as e:
-                logger.warning(f"Ошибка при использовании модели {model_name}: {e}")
-                last_error = e
-                continue
+            for retry in range(max_retries + 1):
+                try:
+                    # Если это не текущая модель, создаем новую
+                    if model_name != self.gemini_model_name:
+                        logger.info(f"Попытка использовать модель: {model_name}")
+                        model = genai.GenerativeModel(
+                            model_name,
+                            generation_config={
+                                "response_mime_type": "application/json",
+                                "temperature": 0.3
+                            }
+                        )
+                    else:
+                        model = self.gemini_model
+                    
+                    # Выполняем запрос
+                    response = model.generate_content(prompt)
+                    result_text = response.text.strip()
+                    
+                    # Если успешно и использовали другую модель, обновляем текущую
+                    if model_name != self.gemini_model_name:
+                        self.gemini_model = model
+                        self.gemini_model_name = model_name
+                        logger.info(f"Успешно переключились на модель: {model_name}")
+                    
+                    return result_text
+                    
+                except Exception as e:
+                    error_str = str(e)
+                    last_error = e
+                    
+                    # Проверяем на rate limit (429)
+                    if '429' in error_str or 'quota' in error_str.lower() or 'rate' in error_str.lower():
+                        # Извлекаем время ожидания из сообщения об ошибке
+                        import re
+                        retry_match = re.search(r'retry in (\d+(?:\.\d+)?)', error_str.lower())
+                        wait_time = 5  # По умолчанию 5 секунд
+                        
+                        if retry_match:
+                            wait_time = min(float(retry_match.group(1)), 30)  # Максимум 30 секунд
+                        
+                        if retry < max_retries:
+                            logger.warning(f"⏳ Rate limit для модели {model_name}. Ожидание {wait_time:.1f}с перед повтором ({retry + 1}/{max_retries})")
+                            time.sleep(wait_time)
+                            continue
+                        else:
+                            logger.warning(f"❌ Rate limit для модели {model_name}. Исчерпаны попытки, переключаемся на следующую модель")
+                            break  # Переходим к следующей модели
+                    else:
+                        logger.warning(f"Ошибка при использовании модели {model_name}: {e}")
+                        break  # При других ошибках сразу переходим к следующей модели
         
         # Если все модели не сработали, выбрасываем последнюю ошибку
         raise RuntimeError(f"Не удалось выполнить запрос ни к одной из моделей Gemini. Последняя ошибка: {last_error}")
@@ -857,12 +889,6 @@ class VoiceTaskProcessor:
             return ""
         
         try:
-            # Используем Gemini для форматирования описания
-            import google.generativeai as genai
-            
-            genai.configure(api_key=self.gemini_api_key)
-            model = genai.GenerativeModel('gemini-2.0-flash-exp')
-            
             prompt = f"""
 Преобразуй текст в деловое описание задачи.
 
@@ -890,15 +916,29 @@ class VoiceTaskProcessor:
 ИСХОДНЫЙ: "починить что-то на сайте, там все сломалось"
 РЕЗУЛЬТАТ: "Выявить и устранить технические неисправности на сайте"
 
-ОТВЕТ (только отформатированное описание):
+ОТВЕТ (только отформатированное описание, без кавычек):
 """
             
-            response = model.generate_content(prompt)
-            formatted_description = response.text.strip()
+            # Используем механизм fallback с разными моделями
+            self._ensure_gemini_model_initialized()
+            formatted_description = self._try_gemini_models_with_fallback(prompt)
             
             # Дополнительная очистка
             formatted_description = re.sub(r'["\']', '', formatted_description)
             formatted_description = re.sub(r'\s+', ' ', formatted_description).strip()
+            
+            # Убираем JSON обертки если есть
+            if formatted_description.startswith('{') or formatted_description.startswith('['):
+                # Пробуем извлечь текст из JSON
+                try:
+                    import json
+                    data = json.loads(formatted_description)
+                    if isinstance(data, dict):
+                        formatted_description = data.get('description', data.get('result', str(data)))
+                    elif isinstance(data, list) and len(data) > 0:
+                        formatted_description = str(data[0])
+                except:
+                    pass
             
             # Ограничиваем длину
             if len(formatted_description) > 300:
