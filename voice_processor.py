@@ -278,8 +278,8 @@ class VoiceTaskProcessor:
                 creator_name = creator_info.get('NAME', '') + ' ' + creator_info.get('LAST_NAME', '')
                 creator_name = creator_name.strip()
                 if creator_name:
-                    creator_info_text = f"\n\nПОСТАВЩИК ЗАДАЧИ: {creator_name} (ID: {creator_info.get('ID')})"
-                    creator_info_text += "\nУЧИТЫВАЙ: Поставщик задачи может быть также ответственным, если это логично из контекста."
+                    creator_info_text = f"\n\nПОЛЬЗОВАТЕЛЬ ОТПРАВИВШИЙ ГОЛОСОВОЕ СООБЩЕНИЕ: {creator_name} (ID: {creator_info.get('ID')})"
+                    creator_info_text += "\nУЧИТЫВАЙ: Этот пользователь является СОЗДАТЕЛЕМ задачи в Bitrix24. Если в тексте не указаны ответственные, назначь задачу на этого пользователя."
             
             # Создаем промпт для Gemini
             current_datetime = datetime.now()
@@ -375,14 +375,15 @@ class VoiceTaskProcessor:
         except Exception as e:
             logger.error(f"Ошибка обработки текста через Gemini: {e}")
             # Fallback к простому парсингу
-            return self._parse_task_text_fallback(text)
+            return self._parse_task_text_fallback(text, creator_info)
     
-    def _parse_task_text_fallback(self, text: str) -> Optional[Dict[str, Any]]:
+    def _parse_task_text_fallback(self, text: str, creator_info: Optional[Dict] = None) -> Optional[Dict[str, Any]]:
         """
         Fallback метод для парсинга текста без использования AI
         
         Args:
             text: Распознанный текст из голосового сообщения
+            creator_info: Информация о создателе задачи
             
         Returns:
             Словарь с данными задачи или None
@@ -393,6 +394,13 @@ class VoiceTaskProcessor:
             
             # Извлекаем ответственных
             responsibles = self._extract_responsibles(text_lower)
+            
+            # Если ответственные не найдены и есть создатель, назначаем на него
+            if not responsibles and creator_info:
+                creator_name = creator_info.get('NAME', '') + ' ' + creator_info.get('LAST_NAME', '')
+                creator_name = creator_name.strip()
+                if creator_name:
+                    responsibles = [creator_name]
             
             # Извлекаем дедлайн
             deadline = self._extract_deadline(text_lower)
