@@ -2149,9 +2149,17 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
         creator_info = None
         if update.message.from_user.id and bitrix_client:
             try:
-                creator_info = bitrix_client.get_user_by_telegram_id(update.message.from_user.id)
-                if creator_info:
-                    logger.info(f"👤 Создатель задачи: {creator_info.get('NAME', '')} {creator_info.get('LAST_NAME', '')}")
+                telegram_id = update.message.from_user.id
+                logger.info(f"🔍 BOT: Поиск пользователя по Telegram ID: {telegram_id} (тип: {type(telegram_id)})")
+                
+                # Используем ту же логику, что и в мини-приложении
+                creator_bitrix_id = get_bitrix_user_id_by_telegram_id(telegram_id)
+                
+                if creator_bitrix_id:
+                    creator_info = bitrix_client.get_user_by_id(creator_bitrix_id)
+                    logger.info(f"👤 BOT: Найден создатель задачи: {creator_info.get('NAME', '')} {creator_info.get('LAST_NAME', '')}")
+                else:
+                    logger.warning(f"⚠️ BOT: Пользователь с Telegram ID {telegram_id} не найден в Bitrix24")
             except Exception as e:
                 logger.warning(f"Не удалось получить информацию о создателе: {e}")
         
