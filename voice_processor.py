@@ -1002,20 +1002,66 @@ class VoiceTaskProcessor:
         
         return questions
         
-    async def process_multiple_voice_tasks(self, voice_file: bytes, telegram_user_id: Optional[int] = None) -> Dict[str, Any]:
+    async def process_multiple_voice_tasks(self, voice: Voice, bot, telegram_user_id: Optional[int] = None) -> Dict[str, Any]:
         """
         Обрабатывает голосовое сообщение и извлекает несколько задач
         
         Args:
-            voice_file: Данные голосового файла
+            voice: Объект голосового сообщения Telegram
+            bot: Экземпляр бота для скачивания файла
             telegram_user_id: ID пользователя в Telegram
             
         Returns:
             Словарь с результатом обработки
         """
         try:
-            # 1. Распознаем речь
-            transcribed_text = await self._transcribe_audio(voice_file)
+            # 1. Скачиваем голосовое сообщение
+            voice_file = await bot.get_file(voice.file_id)
+            
+            # Создаем временный файл
+            with tempfile.NamedTemporaryFile(suffix='.oga', delete=False) as temp_file:
+                await voice_file.download_to_drive(temp_file.name)
+                temp_oga_path = temp_file.name
+            
+            # Конвертируем в MP3 для Whisper
+            temp_mp3_path = temp_oga_path.replace('.oga', '.mp3')
+            try:
+                audio = AudioSegment.from_file(temp_oga_path, format='ogg')
+                audio.export(temp_mp3_path, format='mp3')
+                logger.info(f"🔄 Аудио конвертировано в MP3: {temp_mp3_path}")
+            except Exception as e:
+                logger.error(f"❌ Ошибка конвертации аудио: {e}")
+                self._cleanup_files([temp_oga_path, temp_mp3_path])
+                return {
+                    'success': False,
+                    'error': 'Ошибка конвертации аудио',
+                    'transcribed_text': None
+                }
+            
+            # 2. Распознаем речь через Whisper
+            try:
+                with open(temp_mp3_path, 'rb') as audio_file:
+                    transcript = self.openai_client.audio.transcriptions.create(
+                        model="whisper-1",
+                        file=audio_file,
+                        language='ru'
+                    )
+                
+                transcribed_text = transcript.text.strip()
+                logger.info(f"🎯 Распознанный текст: {transcribed_text}")
+                
+            except Exception as e:
+                logger.error(f"❌ Ошибка распознавания речи: {e}")
+                self._cleanup_files([temp_oga_path, temp_mp3_path])
+                return {
+                    'success': False,
+                    'error': 'Ошибка распознавания речи',
+                    'transcribed_text': None
+                }
+            
+            # Очищаем временные файлы
+            self._cleanup_files([temp_oga_path, temp_mp3_path])
+            
             if not transcribed_text:
                 return {
                     'success': False,

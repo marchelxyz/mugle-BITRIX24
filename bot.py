@@ -2151,7 +2151,7 @@ async def handle_multiple_voice_message(update: Update, context: ContextTypes.DE
         processing_message = await update.message.reply_text("🎤 Обрабатываю голосовое сообщение...")
         
         # Обрабатываем голосовое сообщение для извлечения нескольких задач
-        result = await voice_processor.process_multiple_voice_tasks(update.message.voice, update.message.from_user.id)
+        result = await voice_processor.process_multiple_voice_tasks(update.message.voice, context.bot, update.message.from_user.id)
         
         if not result.get('success'):
             await processing_message.edit_text(f"❌ {result.get('error', 'Не удалось распознать задачи')}")
