@@ -2266,9 +2266,15 @@ async def confirm_voice_task_callback(query, context: ContextTypes.DEFAULT_TYPE)
     try:
         # Получаем информацию о пользователе
         telegram_user_id = query.from_user.id
-        creator_bitrix_id = bitrix_client.get_user_by_telegram_id(telegram_user_id)
+        logger.info(f"🔍 CALLBACK: Поиск пользователя по Telegram ID: {telegram_user_id} (тип: {type(telegram_user_id)})")
         
-        if not creator_bitrix_id:
+        # Используем ту же логику, что и в мини-приложении
+        creator_bitrix_id = get_bitrix_user_id_by_telegram_id(telegram_user_id)
+        
+        if creator_bitrix_id:
+            logger.info(f"👤 CALLBACK: Найден создатель задачи: Bitrix ID {creator_bitrix_id}")
+        else:
+            logger.warning(f"⚠️ CALLBACK: Пользователь с Telegram ID {telegram_user_id} не найден в Bitrix24")
             await query.edit_message_text(
                 "❌ Ваш Telegram ID не связан с аккаунтом Bitrix24. "
                 "Используйте команду /link для привязки."
