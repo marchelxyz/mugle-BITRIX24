@@ -2141,6 +2141,69 @@ async def handle_reply_with_mention(update: Update, context: ContextTypes.DEFAUL
         logger.info(f"Сохранен ID сообщения 'Предложение создать задачу': {proposal_message.message_id}")
 
 
+async def handle_multiple_voice_message_bytes(voice_file: bytes, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик байтов голосовых сообщений для создания нескольких задач"""
+    if not voice_processor:
+        await update.message.reply_text("❌ Голосовой процессор недоступен. Проверьте настройки API ключей.")
+        return
+    
+    try:
+        # Получаем ID пользователя из update
+        telegram_user_id = update.message.from_user.id
+        
+        # Обрабатываем голосовое сообщение
+        result = await voice_processor.process_multiple_voice_tasks(voice_file, telegram_user_id)
+        
+        if result.get('success'):
+            tasks = result.get('tasks', [])
+            tasks_count = result.get('tasks_count', 0)
+            
+            if tasks_count == 0:
+                await update.message.reply_text("❌ Не удалось извлечь задачи из голосового сообщения.")
+                return
+            
+            # Формируем сообщение с задачами для подтверждения
+            response_text = f"🎯 Обнаружено {tasks_count} задач:\n\n"
+            
+            for i, task in enumerate(tasks, 1):
+                title = task.get('title', 'Без названия')
+                description = task.get('description', '')
+                responsibles = task.get('responsibles', [])
+                deadline = task.get('deadline')
+                
+                response_text += f"📋 **Задача {i}**: {title}\n"
+                
+                if description:
+                    response_text += f"📝 Описание: {description}\n"
+                
+                if responsibles:
+                    response_text += f"👥 Ответственные: {', '.join(responsibles)}\n"
+                
+                if deadline:
+                    response_text += f"⏰ Дедлайн: {deadline}\n"
+                
+                response_text += "\n"
+            
+            response_text += "✅ Создать эти задачи?"
+            
+            # Создаем клавиатуру для подтверждения
+            keyboard = [
+                [InlineKeyboardButton("✅ Да, создать", callback_data=f"confirm_multiple_tasks_{result.get('transcribed_text', '')[:50]}")],
+                [InlineKeyboardButton("❌ Отмена", callback_data="cancel_tasks")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await update.message.reply_text(response_text, reply_markup=reply_markup)
+            
+        else:
+            error = result.get('error', 'Неизвестная ошибка')
+            await update.message.reply_text(f"❌ Ошибка обработки: {error}")
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка обработки голосовых сообщений: {e}", exc_info=True)
+        await update.message.reply_text("❌ Произошла ошибка при обработке голосового сообщения. Попробуйте еще раз.")
+
+
 async def handle_multiple_voice_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик голосовых сообщений для создания нескольких задач"""
     if not voice_processor:
@@ -2287,7 +2350,10 @@ async def handle_voice_message_smart(update: Update, context: ContextTypes.DEFAU
         if is_multiple_tasks or task_count >= 2:
             logger.info("🔍 Определен режим множественных задач")
             await processing_message.edit_text("🎯 Обнаружено несколько задач, обрабатываю...")
-            await handle_multiple_voice_message(update, context)
+            # Передаем байты голосового файла, а не весь update
+            with open(temp_oga_path, 'rb') as f:
+                voice_bytes = f.read()
+            await handle_multiple_voice_message_bytes(voice_bytes, update, context)
         else:
             logger.info("🔍 Определен режим одной задачи")
             await processing_message.edit_text("🎯 Обнаружена одна задача, обрабатываю...")
