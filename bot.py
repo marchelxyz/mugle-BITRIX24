@@ -2184,9 +2184,18 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
             response_text += f"📝 **Описание:** {task_data['description']}\n"
         
         response_text += f"\n🎯 Уверенность распознавания: {confidence:.0%}\n\n"
-        response_text += "Создать задачу? Используйте /create для ручного ввода или /confirm_voice для подтверждения."
+        response_text += "Создать эту задачу?"
         
-        await processing_message.edit_text(response_text, parse_mode='Markdown')
+        # Создаем инлайн кнопки
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Создать задачу", callback_data="confirm_voice_create"),
+                InlineKeyboardButton("❌ Отменить", callback_data="confirm_voice_cancel")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await processing_message.edit_text(response_text, reply_markup=reply_markup)
         
         # Сохраняем данные задачи для подтверждения
         context.user_data['pending_voice_task'] = task_data
@@ -2194,6 +2203,110 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
     except Exception as e:
         logger.error(f"Ошибка обработки голосового сообщения: {e}", exc_info=True)
         await update.message.reply_text("❌ Произошла ошибка при обработке голосового сообщения. Попробуйте позже.")
+
+
+async def handle_voice_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Обработчик инлайн кнопок для голосовых сообщений
+    """
+    query = update.callback_query
+    await query.answer()
+    
+    action = query.data
+    
+    if action == "confirm_voice_create":
+        # Вызываем функцию подтверждения
+        await confirm_voice_task_callback(query, context)
+    elif action == "confirm_voice_cancel":
+        # Отменяем задачу
+        if 'pending_voice_task' in context.user_data:
+            del context.user_data['pending_voice_task']
+        
+        await query.edit_message_text("❌ Создание задачи отменено.")
+    else:
+        await query.edit_message_text("⚠️ Неизвестное действие.")
+
+
+async def confirm_voice_task_callback(query, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Создание задачи из голосового сообщения (вызывается из callback)
+    """
+    task_data = context.user_data.get('pending_voice_task')
+    
+    if not task_data:
+        await query.edit_message_text("⚠️ Нет ожидающей задачи из голосового сообщения.")
+        return
+    
+    try:
+        # Получаем информацию о пользователе
+        telegram_user_id = query.from_user.id
+        creator_bitrix_id = bitrix_client.get_user_by_telegram_id(telegram_user_id)
+        
+        if not creator_bitrix_id:
+            await query.edit_message_text(
+                "❌ Ваш Telegram ID не связан с аккаунтом Bitrix24. "
+                "Используйте команду /link для привязки."
+            )
+            return
+        
+        # Ищем ответственных в Bitrix24
+        responsible_bitrix_ids = []
+        for responsible_name in task_data.get('responsibles', []):
+            user_id = bitrix_client.find_user_by_name(responsible_name.strip())
+            if user_id:
+                responsible_bitrix_ids.append(user_id)
+            else:
+                logger.warning(f"Пользователь не найден в Bitrix24: {responsible_name}")
+        
+        if not responsible_bitrix_ids:
+            # Если ответственные не найдены, используем создателя
+            responsible_bitrix_ids = [creator_bitrix_id]
+            warning_text = "⚠️ Ответственные не найдены. Задача будет назначена на вас."
+        else:
+            warning_text = ""
+        
+        # Создаем задачу в Bitrix24
+        task_data_bitrix = {
+            'TITLE': task_data.get('title', 'Задача из голосового сообщения'),
+            'DESCRIPTION': task_data.get('description', ''),
+            'RESPONSIBLE_ID': responsible_bitrix_ids[0],  # Основной ответственный
+            'CREATED_BY': creator_bitrix_id,
+            'DEADLINE': task_data.get('deadline'),
+            'TAGS': 'голосовое_сообщение',
+            'PRIORITY': task_data.get('priority', 'medium')  # Добавляем приоритет
+        }
+        
+        task_result = bitrix_client.create_task(task_data_bitrix)
+        
+        if task_result and 'result' in task_result and 'task' in task_result['result']:
+            task_id = task_result['result']['task']['id']
+            
+            response_text = (
+                f"✅ Задача успешно создана!\n\n"
+                f"📋 ID задачи: {task_id}\n"
+                f"📝 Заголовок: {task_data.get('title')}\n"
+                f"👥 Ответственные: {', '.join(task_data.get('responsibles', []))}\n"
+                f"📅 Дедлайн: {task_data.get('deadline', 'Не указан')}\n"
+                f"🎯 Приоритет: {task_data.get('priority', 'medium').title()}"
+            )
+            
+            if warning_text:
+                response_text = f"{warning_text}\n\n{response_text}"
+            
+            await query.edit_message_text(response_text)
+            
+            # Очищаем ожидающую задачу
+            del context.user_data['pending_voice_task']
+        else:
+            await query.edit_message_text(
+                "❌ Ошибка при создании задачи в Bitrix24. Попробуйте позже."
+            )
+            
+    except Exception as e:
+        logger.error(f"Ошибка при создании задачи из голосового сообщения: {e}", exc_info=True)
+        await query.edit_message_text(
+            "❌ Произошла ошибка при создании задачи. Попробуйте позже."
+        )
 
 
 async def confirm_voice_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2467,7 +2580,10 @@ def main():
         cancel
     ))
     
-    # Обработчик для подтверждения голосовой задачи
+    # Обработчик для инлайн кнопок голосовых сообщений
+    application.add_handler(CallbackQueryHandler(handle_voice_callback, pattern=r'^confirm_voice_'))
+    
+    # Обработчик для команды /confirm_voice (оставляем для совместимости)
     application.add_handler(MessageHandler(
         filters.TEXT & filters.Regex(r'^/confirm_voice(@\w+)?(\s|$)'),
         confirm_voice_task
