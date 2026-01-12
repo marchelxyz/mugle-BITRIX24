@@ -214,11 +214,16 @@ class VoiceTaskProcessor:
             creator_info = None
             if telegram_user_id and self.bitrix_client:
                 try:
+                    logger.info(f"🔍 Поиск пользователя по Telegram ID: {telegram_user_id}")
                     creator_info = self.bitrix_client.get_user_by_telegram_id(telegram_user_id)
                     if creator_info:
-                        logger.info(f"👤 Найден создатель задачи: {creator_info.get('NAME', '')} {creator_info.get('LAST_NAME', '')}")
+                        logger.info(f"👤 Найден создатель задачи: {creator_info.get('NAME', '')} {creator_info.get('LAST_NAME', '')} (ID: {creator_info.get('ID')})")
+                    else:
+                        logger.warning(f"⚠️ Пользователь с Telegram ID {telegram_user_id} не найден в Bitrix24")
                 except Exception as e:
                     logger.warning(f"Не удалось получить информацию о создателе: {e}")
+            else:
+                logger.warning(f"⚠️ Нет telegram_user_id или bitrix_client. telegram_user_id={telegram_user_id}, bitrix_client={bool(self.bitrix_client)}")
             
             # Парсим распознанный текст для извлечения данных задачи
             task_data = await self._parse_task_text_with_gemini(recognized_text, creator_info)
