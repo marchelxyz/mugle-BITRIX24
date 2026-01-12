@@ -152,7 +152,7 @@ class VoiceTaskProcessor:
         # Если все модели не сработали, выбрасываем последнюю ошибку
         raise RuntimeError(f"Не удалось выполнить запрос ни к одной из моделей Gemini. Последняя ошибка: {last_error}")
     
-    async def process_voice_message(self, voice: Voice, bot) -> Optional[Dict[str, Any]]:
+    async def process_voice_message(self, voice: Voice, bot, telegram_user_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
         """
         Обрабатывает голосовое сообщение и извлекает данные задачи
         
@@ -210,8 +210,18 @@ class VoiceTaskProcessor:
             # Очищаем временные файлы
             self._cleanup_files([temp_oga_path, temp_mp3_path])
             
+            # Получаем информацию о создателе задачи
+            creator_info = None
+            if telegram_user_id and self.bitrix_client:
+                try:
+                    creator_info = self.bitrix_client.get_user_by_telegram_id(telegram_user_id)
+                    if creator_info:
+                        logger.info(f"👤 Найден создатель задачи: {creator_info.get('NAME', '')} {creator_info.get('LAST_NAME', '')}")
+                except Exception as e:
+                    logger.warning(f"Не удалось получить информацию о создателе: {e}")
+            
             # Парсим распознанный текст для извлечения данных задачи
-            task_data = await self._parse_task_text_with_gemini(recognized_text)
+            task_data = await self._parse_task_text_with_gemini(recognized_text, creator_info)
             
             if task_data:
                 task_data['original_text'] = recognized_text
@@ -235,7 +245,7 @@ class VoiceTaskProcessor:
             except Exception as e:
                 logger.warning(f"⚠️ Ошибка удаления файла {file_path}: {e}")
     
-    async def _parse_task_text_with_gemini(self, text: str) -> Optional[Dict[str, Any]]:
+    async def _parse_task_text_with_gemini(self, text: str, creator_info: Optional[Dict] = None) -> Optional[Dict[str, Any]]:
         """
         Парсит распознанный текст с использованием Google Gemini для извлечения данных задачи
         
@@ -262,6 +272,15 @@ class VoiceTaskProcessor:
                 except Exception as e:
                     logger.warning(f"Не удалось получить список пользователей: {e}")
             
+            # Добавляем информацию о создателе задачи
+            creator_info_text = ""
+            if creator_info:
+                creator_name = creator_info.get('NAME', '') + ' ' + creator_info.get('LAST_NAME', '')
+                creator_name = creator_name.strip()
+                if creator_name:
+                    creator_info_text = f"\n\nПОСТАВЩИК ЗАДАЧИ: {creator_name} (ID: {creator_info.get('ID')})"
+                    creator_info_text += "\nУЧИТЫВАЙ: Поставщик задачи может быть также ответственным, если это логично из контекста."
+            
             # Создаем промпт для Gemini
             current_datetime = datetime.now()
             current_date_str = current_datetime.strftime("%Y-%m-%d %H:%M:%S")
@@ -270,7 +289,7 @@ class VoiceTaskProcessor:
             prompt = f"""Ты — помощник для управления задачами в Битрикс24. Твоя задача — извлечь из текста пользователя детали задачи и вернуть их в формате JSON.
 
 Текущая дата и время: {current_date_str}
-Сегодня: {current_date_only}{users_list}
+Сегодня: {current_date_only}{users_list}{creator_info_text}
 
 Текст пользователя: "{text}"
 
