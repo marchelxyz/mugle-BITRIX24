@@ -1208,6 +1208,27 @@ async def webhook_detail_command(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text(f"❌ Ошибка при получении информации о вебхуке: {e}")
 
 
+async def switch_voice_mode_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Переключение режима голосовых сообщений"""
+    # Получаем текущий режим из user_data
+    current_mode = context.user_data.get('voice_mode', 'single')
+    
+    # Переключаем режим
+    new_mode = 'multiple' if current_mode == 'single' else 'single'
+    context.user_data['voice_mode'] = new_mode
+    
+    mode_text = {
+        'single': "одной задачи",
+        'multiple': "нескольких задач"
+    }
+    
+    await update.message.reply_text(
+        f"🔄 Режим голосовых сообщений изменен!\n\n"
+        f"📢 Теперь при отправке голосового сообщения будет распознаваться {mode_text[new_mode]}.\n\n"
+        f"Для переключения обратно используйте: /switch_voice_mode"
+    )
+
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /help"""
     await update.message.reply_text(
@@ -2120,18 +2141,99 @@ async def handle_reply_with_mention(update: Update, context: ContextTypes.DEFAUL
         logger.info(f"Сохранен ID сообщения 'Предложение создать задачу': {proposal_message.message_id}")
 
 
-async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    Обработчик голосовых сообщений для создания задач
-    """
+async def handle_multiple_voice_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик голосовых сообщений для создания нескольких задач"""
     if not voice_processor:
-        await update.message.reply_text(
-            "⚠️ Обработка голосовых сообщений недоступна. Проверьте настройки OPENAI_API_KEY."
-        )
+        await update.message.reply_text("❌ Голосовой процессор недоступен. Проверьте настройки API ключей.")
         return
     
     try:
-        # Отправляем сообщение о начале обработки
+        processing_message = await update.message.reply_text("🎤 Обрабатываю голосовое сообщение...")
+        
+        # Обрабатываем голосовое сообщение для извлечения нескольких задач
+        result = await voice_processor.process_multiple_voice_tasks(update.message.voice, update.message.from_user.id)
+        
+        if not result.get('success'):
+            await processing_message.edit_text(f"❌ {result.get('error', 'Не удалось распознать задачи')}")
+            return
+        
+        tasks = result.get('tasks', [])
+        tasks_count = result.get('tasks_count', 0)
+        transcribed_text = result.get('transcribed_text', '')
+        creator_info = result.get('creator_info')
+        
+        logger.info(f"✅ Извлечено {tasks_count} задач из голосового сообщения")
+        
+        # Формируем сообщение с задачами для подтверждения
+        response_text = f"🎯 Распознано {tasks_count} задач из голосового сообщения:\n\n"
+        
+        # Добавляем информацию о создателе
+        if creator_info:
+            creator_name = creator_info.get('NAME', '') + ' ' + creator_info.get('LAST_NAME', '')
+            creator_name = creator_name.strip()
+            if creator_name:
+                response_text += f"👤 Поставщик задач: {creator_name}\n\n"
+        
+        # Добавляем распознанный текст
+        response_text += f"📝 Распознанный текст: \"{transcribed_text}\"\n\n"
+        
+        # Добавляем список задач
+        for i, task in enumerate(tasks, 1):
+            response_text += f"📋 Задача {i}:\n"
+            response_text += f"   📄 Заголовок: {task.get('title', 'Не определен')}\n"
+            
+            if task.get('description'):
+                response_text += f"   📝 Описание: {task.get('description', '')}\n"
+            
+            responsibles = task.get('responsibles', [])
+            if responsibles:
+                response_text += f"   👥 Ответственные: {', '.join(responsibles)}\n"
+            
+            deadline = task.get('deadline')
+            if deadline:
+                response_text += f"   📅 Дедлайн: {deadline}\n"
+            
+            priority = task.get('priority', 'medium')
+            priority_emoji = {'low': '🟢', 'medium': '🟡', 'high': '🔴'}.get(priority, '🟡')
+            response_text += f"   🎯 Приоритет: {priority_emoji} {priority.title()}\n"
+            
+            confidence = task.get('confidence', 0.0)
+            response_text += f"   🎯 Уверенность: {int(confidence * 100)}%\n"
+            
+            if i < tasks_count:
+                response_text += "\n"
+        
+        # Сохраняем задачи в user_data для callback
+        context.user_data['pending_multiple_tasks'] = {
+            'tasks': tasks,
+            'creator_info': creator_info,
+            'transcribed_text': transcribed_text
+        }
+        
+        # Создаем инлайн кнопки
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Создать все задачи", callback_data="confirm_multiple_create"),
+                InlineKeyboardButton("❌ Отменить", callback_data="confirm_multiple_cancel")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await processing_message.edit_text(response_text, reply_markup=reply_markup)
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка обработки голосового сообщения: {e}", exc_info=True)
+        if 'processing_message' in locals():
+            await processing_message.edit_text("❌ Произошла ошибка при обработке голосового сообщения. Попробуйте еще раз.")
+
+
+async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик голосовых сообщений для создания одной задачи"""
+    if not voice_processor:
+        await update.message.reply_text("❌ Голосовой процессор недоступен. Проверьте настройки API ключей.")
+        return
+    
+    try:
         processing_message = await update.message.reply_text("🎤 Обрабатываю голосовое сообщение...")
         
         # Обрабатываем голосовое сообщение
@@ -2169,14 +2271,21 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
             f"📝 Распознанный текст: \"{original_text}\"\n\n🤖 Анализирую запрос..."
         )
         
-        # Если уверенность низкая, задаем уточняющие вопросы
-        if confidence < 0.5:
+        # Если уверенность низкая или нет ответственных, задаем уточняющие вопросы
+        needs_clarification = confidence < 0.5 or not task_data.get('responsibles')
+        
+        if needs_clarification:
             questions = voice_processor.generate_clarification_questions(task_data)
             
             if questions:
                 response_text = "🤔 Нужны уточнения по задаче:\n\n"
                 response_text += "\n".join(f"• {q}" for q in questions)
-                response_text += "\n\nПожалуйста, отправьте уточнения текстом или используйте /create для ручного ввода."
+                
+                if not task_data.get('responsibles'):
+                    response_text += "\n\n💡 Вы можете:"
+                    response_text += "\n• Указать ответственных текстом (например: \"Иван, Мария\")"
+                    response_text += "\n• Использовать /create для ручного создания задачи"
+                    response_text += "\n• Отправить новое голосовое сообщение с уточнением"
                 
                 await processing_message.edit_text(response_text)
                 
@@ -2231,6 +2340,98 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("❌ Произошла ошибка при обработке голосового сообщения. Попробуйте позже.")
 
 
+async def handle_voice_clarification(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Обработчик текстовых уточнений для голосовых сообщений
+    """
+    # Проверяем, есть ли ожидающая задача из голосового сообщения
+    pending_task = context.user_data.get('pending_voice_task')
+    
+    if not pending_task:
+        return  # Не обрабатываем, если нет ожидающей задачи
+    
+    try:
+        # Получаем текст уточнения
+        clarification_text = update.message.text.strip()
+        
+        if not clarification_text:
+            return
+        
+        logger.info(f"📝 Получено уточнение к голосовой задаче: {clarification_text}")
+        
+        # Обновляем данные задачи на основе уточнения
+        updated_task = pending_task.copy()
+        
+        # Ищем ответственных в тексте уточнения
+        if not updated_task.get('responsibles'):
+            # Простые паттерны для поиска имен
+            names = []
+            
+            # Разделяем по запятым и "и"
+            parts = re.split(r'[,и]\s*', clarification_text)
+            for part in parts:
+                part = part.strip()
+                if len(part) > 2 and len(part) < 50:  # Разумная длина имени
+                    names.append(part)
+            
+            if names:
+                updated_task['responsibles'] = names
+                logger.info(f"👥 Найдены ответственные в уточнении: {names}")
+        
+        # Проверяем, что теперь есть ответственные
+        if updated_task.get('responsibles'):
+            # Показываем обновленные данные задачи
+            response_text = "✅ Задача обновлена с учетом уточнений:\n\n"
+            
+            # Добавляем информацию о создателе
+            creator_info = pending_task.get('creator_info')
+            if creator_info:
+                creator_name = creator_info.get('NAME', '') + ' ' + creator_info.get('LAST_NAME', '')
+                creator_name = creator_name.strip()
+                if creator_name:
+                    response_text += f"👤 Поставщик задачи: {creator_name}\n"
+            
+            response_text += f"📋 Заголовок: {updated_task.get('title', 'Не определен')}\n"
+            response_text += f"👥 Ответственные: {', '.join(updated_task['responsibles'])}\n"
+            
+            if updated_task.get('deadline'):
+                response_text += f"📅 Дедлайн: {updated_task['deadline']}\n"
+            
+            if updated_task.get('priority'):
+                priority_emoji = {'low': '🔵', 'medium': '🟡', 'high': '🔴'}.get(updated_task['priority'], '⚪')
+                response_text += f"🎯 Приоритет: {priority_emoji} {updated_task['priority'].title()}\n"
+            
+            if updated_task.get('description'):
+                response_text += f"📝 Описание: {updated_task['description']}\n"
+            
+            response_text += f"\nСоздать эту задачу?"
+            
+            # Создаем инлайн кнопки
+            keyboard = [
+                [
+                    InlineKeyboardButton("✅ Создать задачу", callback_data="confirm_voice_create"),
+                    InlineKeyboardButton("❌ Отменить", callback_data="confirm_voice_cancel")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            # Обновляем ожидающую задачу
+            context.user_data['pending_voice_task'] = updated_task
+            
+            await update.message.reply_text(response_text, reply_markup=reply_markup)
+        else:
+            # Если все еще не найдены ответственные
+            await update.message.reply_text(
+                "🤔 Не удалось найти ответственных в уточнении.\n\n"
+                "Пожалуйста, укажите имена более четко (например: \"Иван Петров\") "
+                "или используйте /create для ручного создания задачи."
+            )
+        
+    except Exception as e:
+        logger.error(f"Ошибка обработки уточнения к голосовой задаче: {e}", exc_info=True)
+        await update.message.reply_text("❌ Произошла ошибка при обработке уточнения. Попробуйте позже.")
+
+
 async def handle_voice_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Обработчик инлайн кнопок для голосовых сообщений
@@ -2249,6 +2450,15 @@ async def handle_voice_callback(update: Update, context: ContextTypes.DEFAULT_TY
             del context.user_data['pending_voice_task']
         
         await query.edit_message_text("❌ Создание задачи отменено.")
+    elif action == "confirm_multiple_create":
+        # Создаем несколько задач
+        await confirm_multiple_tasks_callback(query, context)
+    elif action == "confirm_multiple_cancel":
+        # Отменяем несколько задач
+        if 'pending_multiple_tasks' in context.user_data:
+            del context.user_data['pending_multiple_tasks']
+        
+        await query.edit_message_text("❌ Создание задач отменено.")
     else:
         await query.edit_message_text("⚠️ Неизвестное действие.")
 
@@ -2280,6 +2490,12 @@ async def confirm_voice_task_callback(query, context: ContextTypes.DEFAULT_TYPE)
                 "Используйте команду /link для привязки."
             )
             return
+            logger.warning(f"⚠️ CALLBACK: Пользователь с Telegram ID {telegram_user_id} не найден в Bitrix24")
+            await query.edit_message_text(
+                "❌ Ваш Telegram ID не связан с аккаунтом Bitrix24. "
+                "Используйте команду /link для привязки."
+            )
+            return
         
         # Ищем ответственных в Bitrix24
         responsible_bitrix_ids = []
@@ -2293,11 +2509,13 @@ async def confirm_voice_task_callback(query, context: ContextTypes.DEFAULT_TYPE)
                 logger.warning(f"Пользователь не найден в Bitrix24: {responsible_name}")
         
         if not responsible_bitrix_ids:
-            # Если ответственные не найдены, используем создателя
-            responsible_bitrix_ids = [creator_bitrix_id]
-            warning_text = "⚠️ Ответственные не найдены. Задача будет назначена на вас."
-        else:
-            warning_text = ""
+            # Если ответственные не найдены, просим уточнить
+            await query.edit_message_text(
+                "❌ Ответственные не найдены в Bitrix24.\n\n"
+                "Пожалуйста, уточните ответственных текстом (например: \"Иван Петров, Мария Иванова\") "
+                "или используйте /create для ручного создания задачи."
+            )
+            return
         
         # Создаем задачу в Bitrix24
         task_result = bitrix_client.create_task(
@@ -2321,9 +2539,6 @@ async def confirm_voice_task_callback(query, context: ContextTypes.DEFAULT_TYPE)
                 f"🎯 Приоритет: {task_data.get('priority', 'medium').title()}"
             )
             
-            if warning_text:
-                response_text = f"{warning_text}\n\n{response_text}"
-            
             await query.edit_message_text(response_text)
             
             # Очищаем ожидающую задачу
@@ -2337,6 +2552,128 @@ async def confirm_voice_task_callback(query, context: ContextTypes.DEFAULT_TYPE)
         logger.error(f"Ошибка при создании задачи из голосового сообщения: {e}", exc_info=True)
         await query.edit_message_text(
             "❌ Произошла ошибка при создании задачи. Попробуйте позже."
+        )
+
+
+async def confirm_multiple_tasks_callback(query, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Создание нескольких задач из голосового сообщения (вызывается из callback)
+    """
+    pending_data = context.user_data.get('pending_multiple_tasks')
+    
+    if not pending_data:
+        await query.edit_message_text("⚠️ Нет ожидающих задач из голосового сообщения.")
+        return
+    
+    try:
+        # Получаем информацию о пользователе
+        telegram_user_id = query.from_user.id
+        logger.info(f"🔍 CALLBACK: Поиск пользователя по Telegram ID: {telegram_user_id} (тип: {type(telegram_user_id)})")
+        
+        # Используем ту же логику, что и в мини-приложении
+        creator_bitrix_id = get_bitrix_user_id_by_telegram_id(telegram_user_id)
+        
+        if creator_bitrix_id:
+            logger.info(f"👤 CALLBACK: Найден создатель задачи: Bitrix ID {creator_bitrix_id}")
+        else:
+            logger.warning(f"⚠️ CALLBACK: Пользователь с Telegram ID {telegram_user_id} не найден в Bitrix24")
+            await query.edit_message_text(
+                "❌ Ваш Telegram ID не связан с аккаунтом Bitrix24. "
+                "Используйте команду /link для привязки."
+            )
+            return
+        
+        tasks = pending_data.get('tasks', [])
+        created_tasks = []
+        failed_tasks = []
+        
+        # Создаем задачи по очереди
+        for i, task in enumerate(tasks, 1):
+            try:
+                # Ищем ответственных в Bitrix24
+                responsible_bitrix_ids = []
+                for responsible_name in task.get('responsibles', []):
+                    user_id = bitrix_client.search_users(responsible_name.strip())
+                    if user_id:
+                        # Берем первого найденного пользователя
+                        user_id = user_id[0]['ID']
+                        responsible_bitrix_ids.append(user_id)
+                    else:
+                        logger.warning(f"Пользователь не найден в Bitrix24: {responsible_name}")
+                
+                if not responsible_bitrix_ids:
+                    # Если ответственные не найдены, добавляем в failed_tasks
+                    failed_tasks.append({
+                        'title': task.get('title'),
+                        'error': 'Ответственные не найдены в Bitrix24'
+                    })
+                    logger.error(f"❌ Задача {i}: ответственные не найдены")
+                    continue  # Пропускаем создание задачи
+                
+                # Создаем задачу в Bitrix24
+                task_result = bitrix_client.create_task(
+                    title=task.get('title', f'Задача {i} из голосового сообщения'),
+                    responsible_ids=responsible_bitrix_ids,
+                    creator_id=creator_bitrix_id,
+                    description=task.get('description', ''),
+                    deadline=task.get('deadline'),
+                    files=None
+                )
+                
+                if task_result and 'result' in task_result and 'task' in task_result['result']:
+                    task_id = task_result['result']['task']['id']
+                    created_tasks.append({
+                        'id': task_id,
+                        'title': task.get('title'),
+                        'responsibles': task.get('responsibles', []),
+                        'deadline': task.get('deadline'),
+                        'priority': task.get('priority', 'medium')
+                    })
+                    logger.info(f"✅ Задача {i} создана: ID {task_id}")
+                else:
+                    failed_tasks.append({
+                        'title': task.get('title'),
+                        'error': 'Ошибка создания в Bitrix24'
+                    })
+                    logger.error(f"❌ Ошибка создания задачи {i}")
+                    
+            except Exception as e:
+                failed_tasks.append({
+                    'title': task.get('title'),
+                    'error': str(e)
+                })
+                logger.error(f"❌ Ошибка создания задачи {i}: {e}")
+        
+        # Формируем ответ
+        if created_tasks:
+            response_text = f"✅ Создано {len(created_tasks)} задач:\n\n"
+            
+            for task in created_tasks:
+                response_text += f"📋 Задача #{task['id']}: {task['title']}\n"
+                if task['responsibles']:
+                    response_text += f"   👥 {', '.join(task['responsibles'])}\n"
+                if task['deadline']:
+                    response_text += f"   📅 {task['deadline']}\n"
+                response_text += f"   🎯 {task['priority'].title()}\n\n"
+            
+            if failed_tasks:
+                response_text += f"⚠️ Не создано {len(failed_tasks)} задач:\n"
+                for task in failed_tasks:
+                    response_text += f"   ❌ {task['title']}: {task['error']}\n"
+        else:
+            response_text = "❌ Не удалось создать ни одной задачи.\n\n"
+            for task in failed_tasks:
+                response_text += f"❌ {task['title']}: {task['error']}\n"
+        
+        await query.edit_message_text(response_text)
+        
+        # Очищаем ожидающие задачи
+        del context.user_data['pending_multiple_tasks']
+        
+    except Exception as e:
+        logger.error(f"Ошибка при создании задач из голосового сообщения: {e}", exc_info=True)
+        await query.edit_message_text(
+            "❌ Произошла ошибка при создании задач. Попробуйте позже."
         )
 
 
@@ -2576,6 +2913,10 @@ def main():
         filters.TEXT & filters.Regex(r'^/help(@\w+)?(\s|$)'),
         help_command
     ))
+    application.add_handler(MessageHandler(
+        filters.TEXT & filters.Regex(r'^/switch_voice_mode(@\w+)?(\s|$)'),
+        switch_voice_mode_command
+    ))
     # Обработчик команды /link - проверяем только начало команды
     application.add_handler(MessageHandler(
         filters.TEXT & filters.Regex(r'^/link'),
@@ -2619,13 +2960,32 @@ def main():
         confirm_voice_task
     ))
     
+    # Обработчик для команды /multiple_voice (создание нескольких задач)
+    application.add_handler(MessageHandler(
+        filters.TEXT & filters.Regex(r'^/multiple_voice(@\w+)?(\s|$)'),
+        handle_multiple_voice_message
+    ))
+    
     # Обработчик голосовых сообщений (если доступен)
     logger.info(f"🔍 Проверка регистрации обработчика голоса: VOICE_PROCESSOR_AVAILABLE={VOICE_PROCESSOR_AVAILABLE}, voice_processor={'доступен' if voice_processor else 'недоступен'}")
     if VOICE_PROCESSOR_AVAILABLE and voice_processor:
         application.add_handler(MessageHandler(filters.VOICE, handle_voice_message))
         logger.info("✅ Обработчик голосовых сообщений зарегистрирован")
+        
+        # Также регистрируем обработчик для нескольких задач по умолчанию
+        # Можно переключить режим через команду /switch_voice_mode
+        application.add_handler(MessageHandler(filters.VOICE, handle_multiple_voice_message), group=1)
+        logger.info("✅ Обработчик множественных голосовых сообщений зарегистрирован (группа 1)")
     else:
         logger.warning("⚠️ Обработчик голосовых сообщений не зарегистрирован (требуются OPENAI_API_KEY и GEMINI_API_KEY)")
+    
+    # Обработчик для текстовых уточнений к голосовым сообщениям
+    if VOICE_PROCESSOR_AVAILABLE and voice_processor:
+        application.add_handler(MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            handle_voice_clarification
+        ), group=2)  # Группа 2 для обработки уточнений
+        logger.info("✅ Обработчик уточнений к голосовым сообщениям зарегистрирован (группа 2)")
     
     # Обработчик для reply-сообщений с упоминанием бота
     # Регистрируем ПЕРЕД ConversationHandler, чтобы он имел приоритет
