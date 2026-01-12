@@ -2145,6 +2145,16 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
         confidence = task_data.get('confidence', 0.0)
         logger.info(f"Уверенность распознавания: {confidence:.2f}")
         
+        # Получаем информацию о создателе задачи
+        creator_info = None
+        if update.message.from_user.id and bitrix_client:
+            try:
+                creator_info = bitrix_client.get_user_by_telegram_id(update.message.from_user.id)
+                if creator_info:
+                    logger.info(f"👤 Создатель задачи: {creator_info.get('NAME', '')} {creator_info.get('LAST_NAME', '')}")
+            except Exception as e:
+                logger.warning(f"Не удалось получить информацию о создателе: {e}")
+        
         # Показываем распознанный текст
         original_text = task_data.get('original_text', '')
         await processing_message.edit_text(
@@ -2168,6 +2178,14 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
         
         # Если уверенность хорошая, показываем распознанные данные
         response_text = "✅ Задача распознана из голосового сообщения:\n\n"
+        
+        # Добавляем информацию о создателе
+        if creator_info:
+            creator_name = creator_info.get('NAME', '') + ' ' + creator_info.get('LAST_NAME', '')
+            creator_name = creator_name.strip()
+            if creator_name:
+                response_text += f"👤 Поставщик задачи: {creator_name}\n"
+        
         response_text += f"📋 Заголовок: {task_data.get('title', 'Не определен')}\n"
         
         if task_data.get('responsibles'):
